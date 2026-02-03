@@ -2,16 +2,18 @@
 
 ## Proyecto
 Extension de Chrome (Manifest V3) para descargar documentos XML/PDF del SRI Ecuador.
-Version: 1.0.0 | Dominio: `srienlinea.sri.gob.ec`
+Version: 1.1.0 | Dominio: `srienlinea.sri.gob.ec`
 
 ## Estructura de archivos
 ```
 sri-downloader-extension/
 ├── manifest.json      # Manifest V3 config
-├── background.js      # Service Worker (~590 lineas)
-├── content.js         # Content Script (~407 lineas)
+├── config.js          # Constantes compartidas (delays, selectores, timeouts)
+├── background.js      # Service Worker - orquestacion de descargas
+├── content.js         # Content Script - extractor de datos DOM
 ├── popup.html         # UI del popup
-├── popup.js           # Logica del popup (~470 lineas)
+├── popup.js           # Logica del popup
+├── popup.css          # Estilos (incluye dark mode)
 ├── icons/             # Iconos PNG y SVG (16, 48, 128)
 ├── README.md
 └── CLAUDE.md
@@ -24,66 +26,95 @@ sri-downloader-extension/
 
 ## Arquitectura clave
 
+### Config - `config.js`
+- Constantes centralizadas: delays, timeouts, selectores, reintentos
+- Compartido entre background.js (via `importScripts`) y content.js (via content_scripts en manifest)
+- Objeto global `SRI_CONFIG`
+
 ### Background (Service Worker) - `background.js`
 - **Persistente**: Continua aunque se cierre el popup
 - Ejecuta descargas con `chrome.scripting.executeScript({ world: 'MAIN' })`
-- Verifica descargas reales con `chrome.downloads.onCreated`
+- Verifica descargas reales con `chrome.downloads.onCreated` (filtrado por dominio SRI)
 - Guarda historial en `chrome.storage.local` (organizado por RUC)
 - Enfoque **secuencial**: espera confirmacion de descarga antes de continuar
 - Buffer en memoria durante sesion, escribe a storage al finalizar
 - Limpieza automatica de historial >30 dias
+- Indice Set() para deduplicacion O(1)
+- Reintentos automaticos (configurable, default 2)
+- Espera inteligente de paginacion (polling en vez de delay fijo)
+- Detecta tab cerrada y aborta descarga
+- Badge en icono con progreso
+- Notificacion Chrome al finalizar
+- Calcula tiempo estimado restante
 
-### Popup - `popup.html` / `popup.js`
+### Popup - `popup.html` / `popup.js` / `popup.css`
 - Dos tabs: **Descargar** | **Historial**
 - Se comunica con background via `chrome.runtime.sendMessage`
 - Al abrir, consulta estado actual con `obtenerEstado`
-- Muestra barra de progreso en tiempo real durante descargas
+- Muestra barra de progreso granular (por documento, no por pagina)
+- Estimacion de tiempo restante ("~2:30 restantes")
+- Confirmacion antes de descarga masiva con estimado de documentos
 - Historial filtrable: todos, exitosos, fallidos
-- Seleccion individual con checkboxes o "Seleccionar todo"
-- Seleccion de tipo: XML, PDF o Ambos
+- Exportar historial a CSV
+- Boton reintentar fallidos
+- Recordar ultimo tipo de descarga (XML/PDF/Ambos)
+- Sonido al completar (AudioContext beep)
+- Dark mode automatico (prefers-color-scheme)
+- Construccion DOM segura (textContent, no innerHTML)
 
 ### Content Script - `content.js`
-- Extrae datos de la tabla del SRI (RUC, tipo, fecha, links)
-- Maneja paginacion: detecta pagina actual y total
+- Solo extractor de datos del DOM (~80 lineas)
+- Extrae filas de tabla y paginacion
 - Tiene guard `window.SRI_DOWNLOADER_LOADED` para evitar reinyeccion
-- Config: `DELAY_DESCARGA=300ms`, `DELAY_PAGINA=1500ms`, `MAX_DOCUMENTOS=500`
+- No ejecuta descargas (eso lo hace background)
 
 ## Mensajes entre componentes
 
-### Popup → Background
+### Popup -> Background
 | Mensaje | Descripcion | Payload |
 |---------|-------------|---------|
 | `iniciarDescargaTotal` | Inicia descarga de todas las paginas | `{tabId, tipoDescarga}` |
 | `detenerDescarga` | Detiene descarga en progreso | - |
 | `obtenerEstado` | Obtiene estado actual | - |
 | `obtenerHistorial` | Obtiene historial completo | `{ruc?}` |
-| `limpiarHistorial` | Limpia storage | - |
 | `obtenerFallidos` | Lista documentos fallidos | - |
+| `limpiarHistorial` | Limpia storage | - |
 
-### Popup → Content Script
+### Popup -> Content Script
 | Mensaje | Descripcion |
 |---------|-------------|
 | `obtenerDocumentos` | Extrae documentos de la tabla actual |
-| `descargarSeleccionados` | Descarga indices seleccionados |
 
-### Background → Popup
+### Background -> Popup
 | Mensaje | Descripcion |
 |---------|-------------|
 | `estadoDescarga` | Actualizacion de progreso en tiempo real |
 
-### Content Script → Background
-| Mensaje | Descripcion |
-|---------|-------------|
-| `ejecutarDescarga` | Solicita descarga de un `linkId` |
-
 ## Flujo de descarga
-1. Popup envia `iniciarDescargaTotal` a background con `tabId` y `tipoDescarga`
-2. Background ejecuta `chrome.scripting.executeScript` en la tab para obtener datos de pagina
-3. Por cada documento, ejecuta `mojarra.jsfcljs()` via `executeScript({ world: 'MAIN' })`
-4. `chrome.downloads.onCreated` confirma que la descarga inicio (timeout 5s si no)
-5. Espera 300ms entre descargas, 1500ms entre cambios de pagina
-6. Al finalizar, guarda resultados en `chrome.storage.local`
-7. Envia `estadoDescarga` al popup con progreso actualizado
+1. Popup muestra confirm() con estimado de documentos
+2. Envia `iniciarDescargaTotal` a background con `tabId` y `tipoDescarga`
+3. Background construye indice Set de descargados previos (O(1) lookup)
+4. Ejecuta `chrome.scripting.executeScript` para obtener datos de pagina
+5. Por cada documento: verifica deduplicacion, ejecuta `mojarra.jsfcljs()` con reintentos
+6. `chrome.downloads.onCreated` (filtrado por sri.gob.ec) confirma descarga
+7. Espera inteligente (polling paginador) entre cambios de pagina
+8. Actualiza badge, calcula tiempo estimado, notifica popup
+9. Al finalizar: guarda en storage, envia notificacion Chrome, beep en popup
+
+## Configuracion (`config.js`)
+```javascript
+SRI_CONFIG = {
+  DELAY_DESCARGA: 300,       // ms entre descargas
+  DELAY_PAGINA: 1500,        // ms fallback cambio pagina
+  DELAY_REINTENTO: 1000,     // ms entre reintentos
+  TIMEOUT_DESCARGA: 5000,    // ms max por descarga
+  TIMEOUT_PAGINA: 10000,     // ms max esperando cambio pagina
+  MAX_REINTENTOS: 2,         // reintentos por descarga
+  DIAS_HISTORIAL: 30,        // auto-limpieza
+  SELECTORES: { ... },       // selectores CSS del SRI
+  DOMINIO_SRI: 'sri.gob.ec'  // filtro para downloads.onCreated
+}
+```
 
 ## Selectores importantes del SRI
 ```javascript
@@ -113,23 +144,26 @@ mojarra.jsfcljs(
 - **Solucion**: Logica de descarga en background service worker
 
 ### Descargas "falsas" (marca OK pero no descargo)
-- **Solucion**: Verificar con `chrome.downloads.onCreated` antes de continuar
+- **Solucion**: Verificar con `chrome.downloads.onCreated` filtrado por dominio SRI
 
 ### Content script se reinyecta
 - **Solucion**: Guard `if (window.SRI_DOWNLOADER_LOADED)` al inicio
 
-## Limitaciones actuales
-- Selectores hardcodeados: cambios en el DOM del SRI rompen la extraccion
-- `MAX_DOCUMENTOS` (500) esta definido pero no se aplica en el codigo
-- No hay reintento automatico de descargas fallidas
-- No se puede re-descargar solo los fallidos desde el historial
-- `chrome.downloads.onCreated` confirma inicio, no finalizacion de descarga
+### Tab cerrada durante descarga
+- **Solucion**: Listener `chrome.tabs.onRemoved` aborta descarga
+
+### Descargas fallidas por timeout transitorio
+- **Solucion**: Reintentos automaticos (2 por default)
+
+### Paginacion con servidor lento
+- **Solucion**: Polling inteligente del paginador con fallback a delay fijo
 
 ## Permisos requeridos (manifest.json)
 - `activeTab` - Acceso a la tab activa
 - `scripting` - Ejecutar scripts en paginas
 - `downloads` - Monitorear descargas
 - `storage` - Almacenamiento local para historial
+- `notifications` - Notificacion al finalizar descarga
 - Host: `https://srienlinea.sri.gob.ec/*`
 
 ## Testing
@@ -137,9 +171,16 @@ mojarra.jsfcljs(
 2. Login y navegar a comprobantes recibidos
 3. Ejecutar consulta para tener documentos en la tabla
 4. Abrir popup de la extension
-5. Probar "Descargar TODO" - verificar progreso en tiempo real
-6. Cerrar popup y verificar que continua (ver logs del service worker)
-7. Reabrir popup y verificar que muestra progreso actual
-8. Verificar historial en tab "Historial"
-9. Probar filtros de historial (exitosos/fallidos)
-10. Probar "Limpiar historial"
+5. Verificar que recuerda ultimo tipo de descarga
+6. Probar "Descargar TODO" - verificar confirmacion con estimado
+7. Verificar progreso granular y estimacion de tiempo
+8. Verificar badge en icono de extension
+9. Cerrar popup y verificar que continua (ver logs del service worker)
+10. Verificar notificacion Chrome al finalizar
+11. Reabrir popup y verificar que muestra progreso/resultado
+12. Verificar historial en tab "Historial"
+13. Probar filtros de historial (exitosos/fallidos)
+14. Probar "Exportar" (genera CSV)
+15. Probar "Reintentar fallidos"
+16. Probar "Limpiar historial"
+17. Verificar dark mode (cambiar tema del OS)

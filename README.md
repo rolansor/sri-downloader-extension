@@ -5,16 +5,26 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 ## Caracteristicas
 
 - **Descarga masiva**: Descarga todos los documentos de todas las paginas con un solo click
-- **Tipos de archivo**: XML, PDF o ambos
+- **Tipos de archivo**: XML, PDF o ambos (recuerda tu ultima seleccion)
 - **Seleccion individual**: Checkboxes para elegir documentos especificos
-- **Navegacion automatica**: Recorre todas las paginas de resultados automaticamente
+- **Navegacion automatica**: Recorre todas las paginas de resultados
 - **Descarga persistente**: Continua descargando aunque cierres el popup
-- **Verificacion real**: Confirma que cada archivo se descargo antes de continuar
+- **Reintentos automaticos**: Reintenta descargas fallidas hasta 2 veces
+- **Verificacion real**: Confirma que cada archivo se descargo (filtrado por dominio SRI)
+- **Espera inteligente**: Detecta cuando la pagina termina de cargar (no usa delays fijos)
+- **Deduplicacion**: Omite documentos ya descargados previamente (busqueda O(1))
+- **Progreso detallado**: Barra por documento con estimacion de tiempo restante
+- **Badge en icono**: Muestra progreso sin abrir el popup
+- **Notificacion Chrome**: Avisa cuando termina la descarga masiva
+- **Sonido al completar**: Beep sutil cuando finaliza (si el popup esta abierto)
 - **Historial de descargas**: Registro persistente organizado por RUC
   - Filtrable por estado (exitosos/fallidos)
+  - Exportar a CSV
+  - Reintentar fallidos con un click
   - Limpieza automatica de registros >30 dias
-- **Deduplicacion**: Omite documentos ya descargados previamente
-- **Progreso en tiempo real**: Barra de progreso con contadores de exito/fallo
+- **Deteccion de tab cerrada**: Aborta descarga si cierras la pagina del SRI
+- **Dark mode**: Se adapta automaticamente al tema del sistema operativo
+- **Confirmacion**: Muestra estimado de documentos antes de iniciar descarga masiva
 
 ## Instalacion
 
@@ -33,16 +43,17 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 5. Selecciona el tipo de descarga (XML, PDF o Ambos)
 6. Opciones:
    - **Descargar TODO**: Descarga todos los documentos de todas las paginas
-   - **Descargar Seleccionados**: Solo los documentos marcados en la pagina actual
+   - **Descargar Solo Esta Pagina**: Solo los documentos marcados en la pagina actual
 7. Puedes cerrar el popup; la descarga continua en segundo plano
 8. Revisa el historial en la pestana "Historial"
+9. Exporta el historial a CSV con el boton "Exportar"
 
 ## Arquitectura
 
 ```
 ┌──────────┐     mensajes     ┌──────────────┐    executeScript    ┌──────────┐
-│  Popup   │ ◄──────────────► │  Background  │ ──────────────────► │ Pagina   │
-│ popup.js │                  │ background.js│ ◄── downloads.on ── │  SRI     │
+│  Popup   │ <──────────────> │  Background  │ ──────────────────> │ Pagina   │
+│ popup.js │                  │ background.js│ <── downloads.on ── │  SRI     │
 └──────────┘                  │ (Service W.) │                     └──────────┘
                               └──────────────┘
                                      │
@@ -50,9 +61,10 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
                               (historial)
 ```
 
-- **Background (Service Worker)**: Orquesta descargas, verifica archivos, guarda historial
-- **Popup**: Interfaz de usuario con tabs Descargar/Historial
-- **Content Script**: Extrae datos de la tabla del SRI
+- **config.js**: Constantes centralizadas (delays, timeouts, selectores)
+- **Background (Service Worker)**: Orquesta descargas, reintentos, badge, notificaciones
+- **Popup**: Interfaz con tabs Descargar/Historial, progreso, exportar CSV
+- **Content Script**: Extrae datos de la tabla del SRI (solo lectura)
 
 ## Permisos
 
@@ -61,17 +73,23 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 | `activeTab` | Acceso a la pestana activa del SRI |
 | `scripting` | Ejecutar scripts para disparar descargas |
 | `downloads` | Verificar que las descargas se iniciaron |
-| `storage` | Guardar historial de descargas |
+| `storage` | Guardar historial y preferencias |
+| `notifications` | Notificar al completar descarga masiva |
 
 Solo funciona en `srienlinea.sri.gob.ec`.
 
-## Notas tecnicas
+## Configuracion
 
-- Delay de 300ms entre descargas para no sobrecargar el servidor
-- Delay de 1500ms al cambiar de pagina para esperar carga del DOM
-- Timeout de 5s por descarga; si no se confirma, se marca como fallida
-- Los archivos van a la carpeta de descargas predeterminada de Chrome
-- Usa `world: 'MAIN'` para ejecutar la funcion `mojarra.jsfcljs()` del SRI
+Los valores se pueden ajustar en `config.js`:
+
+| Parametro | Default | Descripcion |
+|-----------|---------|-------------|
+| `DELAY_DESCARGA` | 300ms | Espera entre descargas |
+| `DELAY_REINTENTO` | 1000ms | Espera entre reintentos |
+| `TIMEOUT_DESCARGA` | 5000ms | Max espera por descarga |
+| `TIMEOUT_PAGINA` | 10000ms | Max espera cambio pagina |
+| `MAX_REINTENTOS` | 2 | Reintentos por descarga fallida |
+| `DIAS_HISTORIAL` | 30 | Dias antes de auto-limpiar |
 
 ## Solucion de problemas
 
@@ -91,3 +109,7 @@ Solo funciona en `srienlinea.sri.gob.ec`.
 ### La extension no aparece
 - Verifica que el Modo de desarrollador esta activado
 - Intenta recargar la extension desde `chrome://extensions/`
+
+### Muchas descargas fallidas
+- El servidor del SRI puede estar lento; los reintentos automaticos ayudan
+- Puedes usar "Reintentar fallidos" en el historial para re-intentar solo los que fallaron

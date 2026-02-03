@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "SRI Document Downloader",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Descarga documentos XML y PDF del portal SRI Ecuador",
   "permissions": [
     "activeTab",
     "scripting",
     "downloads",
-    "storage"
+    "storage",
+    "notifications"
   ],
   "host_permissions": [
     "https://srienlinea.sri.gob.ec/*"
@@ -28,7 +29,7 @@
   "content_scripts": [
     {
       "matches": ["https://srienlinea.sri.gob.ec/*"],
-      "js": ["content.js"],
+      "js": ["config.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

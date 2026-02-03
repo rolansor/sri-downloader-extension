@@ -5,6 +5,8 @@
  * Verifica descargas reales con chrome.downloads API
  */
 
+importScripts('config.js');
+
 // Estado global de descarga
 let estadoDescarga = {
   activo: false,
@@ -18,33 +20,76 @@ let estadoDescarga = {
   totalDocumentos: 0,
   tipoDescarga: 'xml',
   tabId: null,
-  sesionId: null
+  sesionId: null,
+  rucUsuario: null,
+  timestampInicio: null,
+  tiempoEstimado: null,
+  error: null
 };
 
-// Cola de resolvers esperando confirmación de descarga
-let resolverDescarga = null;
+// Resolver pendiente para confirmacion de descarga
+let pendingDownload = { resolver: null };
 
-// Listener para detectar nuevas descargas - resuelve la promesa pendiente
+// Listener para detectar nuevas descargas - filtra por dominio SRI
 chrome.downloads.onCreated.addListener((downloadItem) => {
-  console.log('[SRI Background] Descarga detectada:', downloadItem.filename || downloadItem.url?.substring(0, 50));
-  if (resolverDescarga) {
-    resolverDescarga(true);
-    resolverDescarga = null;
+  const url = downloadItem.url || downloadItem.finalUrl || '';
+  if (!url.includes(SRI_CONFIG.DOMINIO_SRI)) return;
+
+  console.log('[SRI Background] Descarga SRI detectada:', downloadItem.filename || url.substring(0, 50));
+  if (pendingDownload.resolver) {
+    pendingDownload.resolver(true);
+    pendingDownload.resolver = null;
+  }
+});
+
+// Detectar si la tab del SRI se cierra durante descarga
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (estadoDescarga.activo && estadoDescarga.tabId === tabId) {
+    estadoDescarga.detenido = true;
+    estadoDescarga.error = 'La pestana del SRI fue cerrada';
+    console.warn('[SRI Background] Tab cerrada, abortando descarga');
+    actualizarBadge();
+    notificarProgreso();
   }
 });
 
 /**
- * Genera un ID único para la sesión de descarga
+ * Genera un ID unico para la sesion de descarga
  */
 function generarSesionId() {
   return `sesion_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Buffer en memoria para la sesión actual
+// Buffer en memoria para la sesion actual
 let bufferSesion = {
   documentos: [],
   rucUsuario: null
 };
+
+// Indice de documentos ya descargados (Set para O(1) lookup)
+let indiceDescargados = new Set();
+
+/**
+ * Construye un Set con claves de acceso ya descargadas exitosamente
+ */
+async function construirIndiceDescargados(tipoDescarga) {
+  const data = await chrome.storage.local.get(['historialDescargas']);
+  const historial = data.historialDescargas || {};
+  const indice = new Set();
+
+  for (const ruc in historial) {
+    for (const sid in historial[ruc].sesiones) {
+      for (const doc of historial[ruc].sesiones[sid].documentos) {
+        if (!doc.exito) continue;
+        if (tipoDescarga === 'xml' && doc.exitoXml) indice.add(doc.claveAcceso);
+        else if (tipoDescarga === 'pdf' && doc.exitoPdf) indice.add(doc.claveAcceso);
+        else if (tipoDescarga === 'ambos' && doc.exitoXml && doc.exitoPdf) indice.add(doc.claveAcceso);
+      }
+    }
+  }
+
+  return indice;
+}
 
 /**
  * Agrega un documento al buffer en memoria (no escribe a storage)
@@ -118,41 +163,13 @@ async function obtenerHistorial(ruc = null) {
 }
 
 /**
- * Verifica si un documento ya fue descargado exitosamente
- */
-async function documentoYaDescargado(claveAcceso, tipoDescarga) {
-  try {
-    const data = await chrome.storage.local.get(['historialDescargas']);
-    const historial = data.historialDescargas || {};
-
-    for (const ruc in historial) {
-      for (const sesionId in historial[ruc].sesiones) {
-        const sesion = historial[ruc].sesiones[sesionId];
-        const doc = sesion.documentos.find(d => d.claveAcceso === claveAcceso);
-
-        if (doc && doc.exito) {
-          // Verificar si el tipo de descarga coincide
-          if (tipoDescarga === 'xml' && doc.exitoXml) return true;
-          if (tipoDescarga === 'pdf' && doc.exitoPdf) return true;
-          if (tipoDescarga === 'ambos' && doc.exitoXml && doc.exitoPdf) return true;
-        }
-      }
-    }
-    return false;
-  } catch (e) {
-    console.error('[SRI Background] Error verificando historial:', e);
-    return false;
-  }
-}
-
-/**
- * Limpia historial antiguo (más de 30 días)
+ * Limpia historial antiguo (mas de N dias segun config)
  */
 async function limpiarHistorialAntiguo() {
   try {
     const data = await chrome.storage.local.get(['historialDescargas']);
     const historial = data.historialDescargas || {};
-    const limite = Date.now() - (30 * 24 * 60 * 60 * 1000); // 30 días
+    const limite = Date.now() - (SRI_CONFIG.DIAS_HISTORIAL * 24 * 60 * 60 * 1000);
 
     for (const ruc in historial) {
       for (const sesionId in historial[ruc].sesiones) {
@@ -161,7 +178,6 @@ async function limpiarHistorialAntiguo() {
           delete historial[ruc].sesiones[sesionId];
         }
       }
-      // Eliminar RUC si no tiene sesiones
       if (Object.keys(historial[ruc].sesiones).length === 0) {
         delete historial[ruc];
       }
@@ -174,30 +190,26 @@ async function limpiarHistorialAntiguo() {
 }
 
 /**
- * Ejecuta mojarra.jsfcljs y espera confirmación de descarga (secuencial)
+ * Ejecuta mojarra.jsfcljs y espera confirmacion de descarga
  */
 function ejecutarDescargaSRI(tabId, linkId) {
   return new Promise((resolve) => {
-    // Timeout de seguridad - si no hay descarga en 5 seg, marcar fallido
     const timeout = setTimeout(() => {
       console.warn('[SRI Background] Timeout esperando descarga:', linkId);
-      resolverDescarga = null;
+      pendingDownload.resolver = null;
       resolve(false);
-    }, 5000);
+    }, SRI_CONFIG.TIMEOUT_DESCARGA);
 
-    // Preparar para recibir confirmación del listener
-    resolverDescarga = (exito) => {
+    pendingDownload.resolver = (exito) => {
       clearTimeout(timeout);
       resolve(exito);
     };
 
-    // Ejecutar el script
     chrome.scripting.executeScript({
       target: { tabId: tabId },
       world: 'MAIN',
       func: (linkId) => {
         try {
-          console.log('[SRI Downloader] Ejecutando mojarra para:', linkId);
           mojarra.jsfcljs(
             document.getElementById('frmPrincipal'),
             { [linkId]: linkId },
@@ -205,7 +217,6 @@ function ejecutarDescargaSRI(tabId, linkId) {
           );
           return { success: true };
         } catch (e) {
-          console.error('[SRI Downloader] Error:', e);
           return { success: false, error: e.message };
         }
       },
@@ -214,30 +225,43 @@ function ejecutarDescargaSRI(tabId, linkId) {
       const ejecutoOk = resultado[0]?.result?.success ?? false;
       if (!ejecutoOk) {
         clearTimeout(timeout);
-        resolverDescarga = null;
+        pendingDownload.resolver = null;
         resolve(false);
       }
-      // Si ejecutó OK, esperamos al listener onCreated o al timeout
     }).catch((e) => {
       console.error('[SRI Background] Error executeScript:', e);
       clearTimeout(timeout);
-      resolverDescarga = null;
+      pendingDownload.resolver = null;
       resolve(false);
     });
   });
 }
 
 /**
- * Obtiene datos de la página actual
+ * Ejecuta descarga con reintentos automaticos
+ */
+async function ejecutarConReintento(tabId, linkId) {
+  for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
+    const exito = await ejecutarDescargaSRI(tabId, linkId);
+    if (exito) return true;
+    if (intento < SRI_CONFIG.MAX_REINTENTOS) {
+      console.log(`[SRI Background] Reintento ${intento + 1}/${SRI_CONFIG.MAX_REINTENTOS} para:`, linkId);
+      await delay(SRI_CONFIG.DELAY_REINTENTO);
+    }
+  }
+  return false;
+}
+
+/**
+ * Obtiene datos de la pagina actual via executeScript
  */
 async function obtenerDatosPagina(tabId) {
   try {
     const resultado = await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: () => {
-        const SELECTOR_TABLA = '#frmPrincipal\\:tablaCompRecibidos_data';
-        const tabla = document.querySelector(SELECTOR_TABLA);
-        if (!tabla) return { error: 'No se encontró la tabla' };
+      func: (selectores) => {
+        const tabla = document.querySelector(selectores.TABLA_RECIBIDOS);
+        if (!tabla) return { error: 'No se encontro la tabla' };
 
         const filas = tabla.querySelectorAll('tr');
         const documentos = [];
@@ -245,10 +269,9 @@ async function obtenerDatosPagina(tabId) {
         filas.forEach((fila, index) => {
           const celdas = fila.querySelectorAll('td');
           if (celdas.length >= 6) {
-            const linkXml = fila.querySelector('[id$=":lnkXml"]');
-            const linkPdf = fila.querySelector('[id$=":lnkPdf"]');
+            const linkXml = fila.querySelector(selectores.LINK_XML);
+            const linkPdf = fila.querySelector(selectores.LINK_PDF);
 
-            // Extraer información del documento
             const ruc = celdas[1]?.textContent?.trim().split('\n')[0] || '';
             const razonSocial = celdas[1]?.textContent?.trim().split('\n')[1] || '';
             const tipoDoc = celdas[2]?.textContent?.trim().split('\n')[0] || '';
@@ -258,14 +281,8 @@ async function obtenerDatosPagina(tabId) {
             const fechaAutorizacion = celdas[5]?.textContent?.trim() || '';
 
             documentos.push({
-              index: index,
-              ruc: ruc,
-              razonSocial: razonSocial,
-              tipoDoc: tipoDoc,
-              serie: serie,
-              claveAcceso: claveAcceso,
-              fechaEmision: fechaEmision,
-              fechaAutorizacion: fechaAutorizacion,
+              index, ruc, razonSocial, tipoDoc, serie, claveAcceso,
+              fechaEmision, fechaAutorizacion,
               tieneXml: !!linkXml,
               tienePdf: !!linkPdf,
               linkXmlId: linkXml?.id,
@@ -274,8 +291,8 @@ async function obtenerDatosPagina(tabId) {
           }
         });
 
-        // Paginación
-        const paginador = document.querySelector('.ui-paginator-current');
+        // Paginacion
+        const paginador = document.querySelector(selectores.PAGINADOR);
         let paginacion = { actual: 1, total: 1 };
         if (paginador) {
           const match = paginador.textContent.match(/\((\d+) of (\d+)\)/);
@@ -284,11 +301,12 @@ async function obtenerDatosPagina(tabId) {
           }
         }
 
-        // RUC del usuario (de la sesión)
-        const rucUsuario = document.querySelector('.ui-menuitem-text')?.textContent?.match(/\d{13}/)?.[0] || 'desconocido';
+        // RUC del usuario
+        const rucUsuario = document.querySelector(selectores.RUC_USUARIO)?.textContent?.match(/\d{13}/)?.[0] || 'desconocido';
 
         return { documentos, paginacion, rucUsuario };
-      }
+      },
+      args: [SRI_CONFIG.SELECTORES]
     });
     return resultado[0]?.result;
   } catch (e) {
@@ -298,16 +316,17 @@ async function obtenerDatosPagina(tabId) {
 }
 
 /**
- * Navega a la primera página
+ * Navega a la primera pagina
  */
 async function navegarPrimera(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: () => {
-        const boton = document.querySelector('.ui-paginator-first:not(.ui-state-disabled)');
+      func: (selector) => {
+        const boton = document.querySelector(selector);
         if (boton) boton.click();
-      }
+      },
+      args: [SRI_CONFIG.SELECTORES.BOTON_PRIMERA]
     });
     return true;
   } catch (e) {
@@ -316,20 +335,21 @@ async function navegarPrimera(tabId) {
 }
 
 /**
- * Navega a la siguiente página
+ * Navega a la siguiente pagina
  */
 async function navegarSiguiente(tabId) {
   try {
     const resultado = await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: () => {
-        const boton = document.querySelector('.ui-paginator-next:not(.ui-state-disabled)');
+      func: (selector) => {
+        const boton = document.querySelector(selector);
         if (boton) {
           boton.click();
           return true;
         }
         return false;
-      }
+      },
+      args: [SRI_CONFIG.SELECTORES.BOTON_SIGUIENTE]
     });
     return resultado[0]?.result ?? false;
   } catch (e) {
@@ -338,14 +358,45 @@ async function navegarSiguiente(tabId) {
 }
 
 /**
- * Espera un tiempo
+ * Espera inteligente: verifica que el paginador muestre la pagina esperada
  */
+async function esperarCambioPagina(tabId, paginaEsperada) {
+  const inicio = Date.now();
+  while (Date.now() - inicio < SRI_CONFIG.TIMEOUT_PAGINA) {
+    const datos = await obtenerDatosPagina(tabId);
+    if (datos.paginacion?.actual === paginaEsperada) return true;
+    await delay(500);
+  }
+  console.warn(`[SRI Background] Timeout esperando pagina ${paginaEsperada}`);
+  return false;
+}
+
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
- * Notifica el progreso al popup (si está abierto)
+ * Actualiza el badge del icono de la extension
+ */
+function actualizarBadge() {
+  if (estadoDescarga.activo) {
+    const texto = `${estadoDescarga.exitosos}`;
+    chrome.action.setBadgeText({ text: texto });
+    chrome.action.setBadgeBackgroundColor({
+      color: estadoDescarga.fallidos > 0 ? '#ff9800' : '#4caf50'
+    });
+  } else {
+    // Limpiar badge despues de 5 segundos
+    setTimeout(() => {
+      if (!estadoDescarga.activo) {
+        chrome.action.setBadgeText({ text: '' });
+      }
+    }, 5000);
+  }
+}
+
+/**
+ * Notifica el progreso al popup (si esta abierto)
  */
 function notificarProgreso() {
   chrome.runtime.sendMessage({
@@ -355,10 +406,39 @@ function notificarProgreso() {
 }
 
 /**
- * Proceso principal de descarga de todas las páginas
+ * Calcula tiempo estimado restante
+ */
+function calcularTiempoEstimado() {
+  if (!estadoDescarga.timestampInicio || estadoDescarga.documentoActual === 0) {
+    return null;
+  }
+  const transcurrido = Date.now() - estadoDescarga.timestampInicio;
+  const promedioPorDoc = transcurrido / estadoDescarga.documentoActual;
+  const restantes = estadoDescarga.totalDocumentos - estadoDescarga.documentoActual;
+  return Math.round(promedioPorDoc * restantes);
+}
+
+/**
+ * Envia notificacion nativa de Chrome al finalizar
+ */
+function notificarFinalizacion() {
+  const mensaje = estadoDescarga.detenido
+    ? `Detenido: ${estadoDescarga.exitosos} OK, ${estadoDescarga.fallidos} fallidos`
+    : `Completado: ${estadoDescarga.exitosos} OK, ${estadoDescarga.fallidos} fallidos`;
+
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/icon128.png',
+    title: 'SRI Document Downloader',
+    message: mensaje
+  });
+}
+
+/**
+ * Proceso principal de descarga de todas las paginas
  */
 async function descargarTodasLasPaginas(tabId, tipoDescarga) {
-  // Limpiar historial antiguo al iniciar (en background, no bloquea)
+  // Limpiar historial antiguo al iniciar
   limpiarHistorialAntiguo();
 
   const sesionId = generarSesionId();
@@ -366,11 +446,16 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
   // Reiniciar buffer
   bufferSesion = { documentos: [], rucUsuario: null };
 
+  // Construir indice de descargados para O(1) lookup
+  indiceDescargados = await construirIndiceDescargados(tipoDescarga);
+  console.log(`[SRI Background] Indice de descargados: ${indiceDescargados.size} documentos`);
+
   estadoDescarga = {
     activo: true,
     detenido: false,
     exitosos: 0,
     fallidos: 0,
+    omitidos: 0,
     paginaActual: 1,
     totalPaginas: 1,
     documentoActual: 0,
@@ -378,9 +463,13 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
     tipoDescarga: tipoDescarga,
     tabId: tabId,
     sesionId: sesionId,
-    rucUsuario: null
+    rucUsuario: null,
+    timestampInicio: Date.now(),
+    tiempoEstimado: null,
+    error: null
   };
 
+  actualizarBadge();
   notificarProgreso();
 
   // Obtener info inicial
@@ -388,6 +477,7 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
   if (datos.error) {
     estadoDescarga.activo = false;
     estadoDescarga.error = datos.error;
+    actualizarBadge();
     notificarProgreso();
     return;
   }
@@ -396,15 +486,19 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
   estadoDescarga.rucUsuario = datos.rucUsuario;
   bufferSesion.rucUsuario = datos.rucUsuario;
 
-  // Ir a primera página si no estamos en ella
+  // Estimar total de documentos (docs en pagina actual * total paginas)
+  const docsPorPagina = datos.documentos.length;
+  estadoDescarga.totalDocumentos = docsPorPagina * datos.paginacion.total;
+
+  // Ir a primera pagina si no estamos en ella
   if (datos.paginacion.actual > 1) {
-    console.log('[SRI Background] Navegando a primera página...');
+    console.log('[SRI Background] Navegando a primera pagina...');
     await navegarPrimera(tabId);
-    await delay(1500);
+    await esperarCambioPagina(tabId, 1);
     datos = await obtenerDatosPagina(tabId);
   }
 
-  // Procesar todas las páginas
+  // Procesar todas las paginas
   for (let pag = 1; pag <= estadoDescarga.totalPaginas; pag++) {
     if (estadoDescarga.detenido) {
       console.log('[SRI Background] Descarga detenida por usuario');
@@ -412,26 +506,27 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
     }
 
     estadoDescarga.paginaActual = pag;
-    console.log(`[SRI Background] Procesando página ${pag} de ${estadoDescarga.totalPaginas}`);
+    console.log(`[SRI Background] Procesando pagina ${pag} de ${estadoDescarga.totalPaginas}`);
 
-    // Obtener documentos de página actual
+    // Obtener documentos de pagina actual
     datos = await obtenerDatosPagina(tabId);
     if (datos.error) {
       console.error('[SRI Background] Error:', datos.error);
       break;
     }
 
-    // Descargar documentos de esta página
+    // Descargar documentos de esta pagina
     for (const doc of datos.documentos) {
       if (estadoDescarga.detenido) break;
 
       estadoDescarga.documentoActual++;
 
-      // Verificar si ya fue descargado exitosamente
-      const yaDescargado = await documentoYaDescargado(doc.claveAcceso, tipoDescarga);
-      if (yaDescargado) {
-        console.log('[SRI Background] Omitiendo (ya descargado):', doc.claveAcceso);
+      // Verificar si ya fue descargado (O(1) con Set)
+      if (indiceDescargados.has(doc.claveAcceso)) {
+        console.log('[SRI Background] Omitiendo (ya descargado):', doc.claveAcceso.substring(0, 20));
         estadoDescarga.omitidos++;
+        estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
+        actualizarBadge();
         notificarProgreso();
         continue;
       }
@@ -441,18 +536,18 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
       let errorMsg = null;
 
       try {
-        // Descargar XML
+        // Descargar XML con reintentos
         if ((tipoDescarga === 'xml' || tipoDescarga === 'ambos') && doc.tieneXml) {
-          exitoXml = await ejecutarDescargaSRI(tabId, doc.linkXmlId);
+          exitoXml = await ejecutarConReintento(tabId, doc.linkXmlId);
           if (!exitoXml) errorMsg = 'Error descargando XML';
-          await delay(300);
+          await delay(SRI_CONFIG.DELAY_DESCARGA);
         }
 
-        // Descargar PDF
+        // Descargar PDF con reintentos
         if ((tipoDescarga === 'pdf' || tipoDescarga === 'ambos') && doc.tienePdf) {
-          exitoPdf = await ejecutarDescargaSRI(tabId, doc.linkPdfId);
+          exitoPdf = await ejecutarConReintento(tabId, doc.linkPdfId);
           if (!exitoPdf) errorMsg = errorMsg ? 'Error descargando XML y PDF' : 'Error descargando PDF';
-          await delay(300);
+          await delay(SRI_CONFIG.DELAY_DESCARGA);
         }
 
       } catch (e) {
@@ -466,11 +561,12 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
 
       if (exito) {
         estadoDescarga.exitosos++;
+        // Agregar al indice en memoria para no re-descargar si se repite
+        indiceDescargados.add(doc.claveAcceso);
       } else {
         estadoDescarga.fallidos++;
       }
 
-      // Agregar al buffer en memoria (no escribe a storage aún)
       agregarAlBuffer({
         claveAcceso: doc.claveAcceso,
         ruc: doc.ruc,
@@ -487,30 +583,39 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga) {
         fechaDescarga: new Date().toISOString()
       });
 
+      estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
+      actualizarBadge();
       notificarProgreso();
     }
 
-    // Ir a siguiente página si hay más
+    // Ir a siguiente pagina si hay mas
     if (pag < estadoDescarga.totalPaginas && !estadoDescarga.detenido) {
-      console.log('[SRI Background] Navegando a siguiente página...');
+      console.log('[SRI Background] Navegando a siguiente pagina...');
       await navegarSiguiente(tabId);
-      await delay(1500);
+      const cambioOk = await esperarCambioPagina(tabId, pag + 1);
+      if (!cambioOk) {
+        // Fallback: delay fijo si el polling fallo
+        await delay(SRI_CONFIG.DELAY_PAGINA);
+      }
     }
   }
 
-  // Al finalizar, guardar todo el buffer al storage
+  // Guardar buffer al storage
   await guardarBufferAlStorage();
 
   estadoDescarga.activo = false;
-  console.log(`[SRI Background] Descarga finalizada: ${estadoDescarga.exitosos} exitosos, ${estadoDescarga.fallidos} fallidos`);
+  estadoDescarga.tiempoEstimado = null;
+  console.log(`[SRI Background] Descarga finalizada: ${estadoDescarga.exitosos} exitosos, ${estadoDescarga.fallidos} fallidos, ${estadoDescarga.omitidos} omitidos`);
+
+  actualizarBadge();
   notificarProgreso();
+  notificarFinalizacion();
 }
 
 // Escuchar mensajes
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'iniciarDescargaTotal') {
-    // Iniciar descarga desde el popup
     descargarTodasLasPaginas(request.tabId, request.tipoDescarga);
     sendResponse({ status: 'iniciado' });
     return false;
@@ -535,7 +640,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'obtenerFallidos') {
-    // Obtener documentos fallidos de la última sesión
     obtenerHistorial()
       .then(historial => {
         const fallidos = [];
@@ -551,7 +655,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             })));
           }
         }
-        // Ordenar por fecha más reciente
         fallidos.sort((a, b) => new Date(b.fechaDescarga) - new Date(a.fechaDescarga));
         sendResponse({ fallidos });
       })
@@ -567,14 +670,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'ejecutarDescarga') {
-    // Descarga individual (para "solo esta página")
     const tabId = sender.tab?.id;
     if (!tabId) {
       sendResponse({ success: false, error: 'No tab ID' });
       return false;
     }
 
-    ejecutarDescargaSRI(tabId, request.linkId)
+    ejecutarConReintento(tabId, request.linkId)
       .then(success => sendResponse({ success }))
       .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
@@ -583,7 +685,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-// Evento cuando se instala la extensión
+// Evento cuando se instala la extension
 chrome.runtime.onInstalled.addListener(() => {
   console.log('SRI Document Downloader instalado correctamente');
 });
