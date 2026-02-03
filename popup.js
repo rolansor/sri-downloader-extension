@@ -14,8 +14,8 @@ const totalDocs = document.getElementById('totalDocs');
 const paginaInfo = document.getElementById('paginaInfo');
 const docList = document.getElementById('docList');
 const selectAll = document.getElementById('selectAll');
-const btnDescargar = document.getElementById('btnDescargar');
 const btnDescargarTodo = document.getElementById('btnDescargarTodo');
+const btnDescargarSinHistorial = document.getElementById('btnDescargarSinHistorial');
 const btnDetener = document.getElementById('btnDetener');
 const progressContainer = document.getElementById('progressContainer');
 const progressFill = document.getElementById('progressFill');
@@ -142,26 +142,35 @@ function actualizarUIEstado(estado) {
 
       progressText.textContent = mensaje;
 
-      if (estado.fallidos === 0 && estado.exitosos > 0) {
+      // Caso: todos omitidos, nada nuevo descargado
+      if (estado.exitosos === 0 && estado.fallidos === 0 && estado.omitidos > 0) {
+        mostrarEstado(`Los ${estado.omitidos} documentos ya fueron descargados previamente. Usa "Descargar ignorando historial" para forzar la re-descarga.`, 'info');
+      } else if (estado.fallidos === 0 && estado.exitosos > 0) {
         mostrarEstado(mensaje, 'success');
-      } else if (estado.exitosos > 0) {
+      } else if (estado.exitosos > 0 || estado.fallidos > 0) {
         mostrarEstado(mensaje, 'info');
       }
 
-      // Sonido al completar
-      reproducirSonido();
+      // Sonido al completar (solo si descargo algo)
+      if (estado.exitosos > 0) reproducirSonido();
 
       setTimeout(() => {
         progressContainer.classList.remove('active');
-        statusBox.style.display = 'none';
       }, 3000);
+
+      // Mantener el mensaje de omitidos visible mas tiempo
+      if (estado.exitosos === 0 && estado.fallidos === 0 && estado.omitidos > 0) {
+        setTimeout(() => { statusBox.style.display = 'none'; }, 8000);
+      } else {
+        setTimeout(() => { statusBox.style.display = 'none'; }, 3000);
+      }
     } else {
       progressContainer.classList.remove('active');
     }
 
     btnDetener.disabled = true;
-    btnDescargar.disabled = false;
     btnDescargarTodo.disabled = false;
+    btnDescargarSinHistorial.disabled = false;
   }
 }
 
@@ -283,8 +292,8 @@ async function iniciarDescargaTotal() {
     return;
   }
 
-  btnDescargar.disabled = true;
   btnDescargarTodo.disabled = true;
+  btnDescargarSinHistorial.disabled = true;
   btnDetener.disabled = false;
   progressContainer.classList.add('active');
   controlesDescarga.style.display = 'none';
@@ -297,13 +306,14 @@ async function iniciarDescargaTotal() {
     chrome.runtime.sendMessage({
       action: 'iniciarDescargaTotal',
       tabId: tab.id,
-      tipoDescarga: tipoDescarga
+      tipoDescarga: tipoDescarga,
+      ignorarHistorial: false
     });
 
   } catch (error) {
     mostrarEstado(`Error: ${error.message}`, 'error');
-    btnDescargar.disabled = false;
     btnDescargarTodo.disabled = false;
+    btnDescargarSinHistorial.disabled = false;
     btnDetener.disabled = true;
     progressContainer.classList.remove('active');
     controlesDescarga.style.display = 'block';
@@ -311,44 +321,39 @@ async function iniciarDescargaTotal() {
 }
 
 /**
- * Inicia la descarga de documentos seleccionados (solo pagina actual)
+ * Inicia descarga ignorando historial (re-descarga todo)
  */
-async function iniciarDescarga() {
-  const indices = getIndicesSeleccionados();
+async function iniciarDescargaSinHistorial() {
+  const tipoDescarga = getTipoDescarga();
 
-  if (indices.length === 0) {
-    mostrarEstado('Selecciona al menos un documento', 'error');
-    setTimeout(() => statusBox.style.display = 'none', 2000);
+  const estimado = documentos.length * paginacion.total;
+  const tipoTexto = tipoDescarga === 'ambos' ? 'XML + PDF' : tipoDescarga.toUpperCase();
+  if (!confirm(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s) IGNORANDO el historial.\n\nTodos los documentos se descargaran aunque ya existan.\n\n¿Continuar?`)) {
     return;
   }
 
-  const tipoDescarga = getTipoDescarga();
-
-  // Filtrar documentos por indices seleccionados
-  const docsSeleccionados = documentos.filter(d => indices.includes(d.index));
-
-  btnDescargar.disabled = true;
   btnDescargarTodo.disabled = true;
+  btnDescargarSinHistorial.disabled = true;
   btnDetener.disabled = false;
   progressContainer.classList.add('active');
   controlesDescarga.style.display = 'none';
   progressFill.style.width = '0%';
-  progressText.textContent = `Descargando 0 de ${docsSeleccionados.length}...`;
+  progressText.textContent = 'Iniciando descarga...';
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     chrome.runtime.sendMessage({
-      action: 'descargarPaginaActual',
+      action: 'iniciarDescargaTotal',
       tabId: tab.id,
       tipoDescarga: tipoDescarga,
-      indices: indices
+      ignorarHistorial: true
     });
 
   } catch (error) {
     mostrarEstado(`Error: ${error.message}`, 'error');
-    btnDescargar.disabled = false;
     btnDescargarTodo.disabled = false;
+    btnDescargarSinHistorial.disabled = false;
     btnDetener.disabled = true;
     progressContainer.classList.remove('active');
     controlesDescarga.style.display = 'block';
@@ -370,34 +375,6 @@ chrome.runtime.onMessage.addListener((request) => {
     actualizarUIEstado(request.estado);
   }
 
-  if (request.action === 'progreso') {
-    progressText.textContent = `Descargando ${request.actual} de ${request.total || '?'}...`;
-    const porcentaje = request.total ? (request.actual / request.total) * 100 : 50;
-    progressFill.style.width = `${porcentaje}%`;
-  }
-
-  if (request.action === 'descargaCompleta') {
-    const resultado = request.resultado;
-    progressFill.style.width = '100%';
-
-    const mensaje = `Completado: ${resultado.exitosos} exitosos, ${resultado.fallidos} fallidos`;
-    progressText.textContent = mensaje;
-
-    if (resultado.fallidos === 0) {
-      mostrarEstado(mensaje, 'success');
-    } else {
-      mostrarEstado(mensaje, 'info');
-    }
-
-    reproducirSonido();
-
-    setTimeout(() => {
-      btnDescargar.disabled = false;
-      btnDescargarTodo.disabled = false;
-      progressContainer.classList.remove('active');
-      statusBox.style.display = 'none';
-    }, 3000);
-  }
 });
 
 // Event Listeners
@@ -406,8 +383,8 @@ selectAll.addEventListener('change', () => {
   checkboxes.forEach(cb => cb.checked = selectAll.checked);
 });
 
-btnDescargar.addEventListener('click', iniciarDescarga);
 btnDescargarTodo.addEventListener('click', iniciarDescargaTotal);
+btnDescargarSinHistorial.addEventListener('click', iniciarDescargaSinHistorial);
 btnDetener.addEventListener('click', detenerDescarga);
 btnLimpiarHistorial.addEventListener('click', limpiarHistorial);
 btnExportarHistorial.addEventListener('click', exportarHistorial);
@@ -447,7 +424,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
  * Carga el historial de descargas (sin innerHTML para evitar XSS)
  */
 async function cargarHistorial() {
-  const filtro = document.querySelector('input[name="filtroHistorial"]:checked')?.value || 'fallidos';
+  const filtro = document.querySelector('input[name="filtroHistorial"]:checked')?.value || 'todos';
 
   listaHistorial.innerHTML = '';
   const loadingMsg = document.createElement('p');

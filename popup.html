@@ -57,11 +57,11 @@
       </div>
 
       <button id="btnDescargarTodo" class="btn btn-primary">
-        Descargar TODO (Todas las paginas)
+        Descargar TODO
       </button>
 
-      <button id="btnDescargar" class="btn btn-secondary">
-        Descargar Solo Esta Pagina
+      <button id="btnDescargarSinHistorial" class="btn btn-secondary">
+        Descargar ignorando historial
       </button>
     </div>
 
@@ -90,16 +90,16 @@
       </div>
       <div class="filtros-historial" style="margin-bottom: 10px;">
         <label class="radio-option" style="font-size: 11px;">
-          <input type="radio" name="filtroHistorial" value="fallidos" checked>
+          <input type="radio" name="filtroHistorial" value="todos" checked>
+          Todo
+        </label>
+        <label class="radio-option" style="font-size: 11px;">
+          <input type="radio" name="filtroHistorial" value="fallidos">
           Fallidos
         </label>
         <label class="radio-option" style="font-size: 11px;">
           <input type="radio" name="filtroHistorial" value="exitosos">
           Exitosos
-        </label>
-        <label class="radio-option" style="font-size: 11px;">
-          <input type="radio" name="filtroHistorial" value="todos">
-          Todos
         </label>
       </div>
       <div id="listaHistorial" class="doc-list" style="max-height: 280px;">
