@@ -42,6 +42,19 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   }
 });
 
+// Aceptar automaticamente descargas del SRI marcadas como "peligrosas"
+chrome.downloads.onChanged.addListener((delta) => {
+  if (delta.danger && delta.danger.current === 'file') {
+    // Verificar que es una descarga del SRI antes de aceptar
+    chrome.downloads.search({ id: delta.id }, (items) => {
+      if (items.length > 0 && items[0].url?.includes(SRI_CONFIG.DOMINIO_SRI)) {
+        console.log('[SRI Background] Aceptando descarga marcada como peligrosa:', items[0].filename);
+        chrome.downloads.acceptDanger(delta.id);
+      }
+    });
+  }
+});
+
 // Detectar si la tab del SRI se cierra durante descarga
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (estadoDescarga.activo && estadoDescarga.tabId === tabId) {

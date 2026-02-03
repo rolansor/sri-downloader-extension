@@ -3,7 +3,11 @@
  * Compartido entre background.js y content.js
  */
 
-const SRI_CONFIG = {
+if (typeof SRI_CONFIG !== 'undefined') {
+  // Ya cargado, no redeclarar
+} else {
+
+var SRI_CONFIG = {
   // Delays
   DELAY_DESCARGA: 300,       // ms entre descargas individuales
   DELAY_PAGINA: 1500,        // ms minimo al cambiar de pagina (fallback)
@@ -31,3 +35,5 @@ const SRI_CONFIG = {
   // Dominio para filtrar descargas
   DOMINIO_SRI: 'sri.gob.ec',
 };
+
+} // Fin guard SRI_CONFIG
