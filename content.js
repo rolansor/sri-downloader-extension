@@ -5,7 +5,7 @@
 
 // Evitar reinyeccion del script
 if (window.SRI_DOWNLOADER_LOADED) {
-  console.log('[SRI Downloader] Script ya cargado, ignorando reinyeccion');
+  // Ya cargado, ignorar reinyeccion
 } else {
   window.SRI_DOWNLOADER_LOADED = true;
 
@@ -76,6 +76,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-console.log('[SRI Downloader] Content script cargado');
+// Content script listo
 
 } // Fin del bloque if (!window.SRI_DOWNLOADER_LOADED)

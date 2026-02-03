@@ -27,29 +27,33 @@ let estadoDescarga = {
   error: null
 };
 
-// Resolver pendiente para confirmacion de descarga
-let pendingDownload = { resolver: null };
+// Sistema de deteccion de descargas basado en timing
+// Cuando hacemos click en un link del SRI, esperamos que onCreated se dispare
+// dentro del timeout. No filtramos por URL para evitar falsos negativos.
+let pendingDownload = { resolver: null, timestamp: null };
 
-// Listener para detectar nuevas descargas - filtra por dominio SRI
 chrome.downloads.onCreated.addListener((downloadItem) => {
-  const url = downloadItem.url || downloadItem.finalUrl || '';
-  if (!url.includes(SRI_CONFIG.DOMINIO_SRI)) return;
-
-  console.log('[SRI Background] Descarga SRI detectada:', downloadItem.filename || url.substring(0, 50));
-  if (pendingDownload.resolver) {
-    pendingDownload.resolver(true);
-    pendingDownload.resolver = null;
+  // Solo aceptar si hay un resolver pendiente y fue dentro de la ventana de tiempo
+  if (pendingDownload.resolver && pendingDownload.timestamp) {
+    const elapsed = Date.now() - pendingDownload.timestamp;
+    // Solo aceptar descargas que ocurran dentro de la ventana activa
+    if (elapsed < SRI_CONFIG.TIMEOUT_DESCARGA) {
+      pendingDownload.resolver({ success: true, downloadId: downloadItem.id });
+      pendingDownload.resolver = null;
+      pendingDownload.timestamp = null;
+    }
   }
 });
 
 // Aceptar automaticamente descargas del SRI marcadas como "peligrosas"
 chrome.downloads.onChanged.addListener((delta) => {
   if (delta.danger && delta.danger.current === 'file') {
-    // Verificar que es una descarga del SRI antes de aceptar
     chrome.downloads.search({ id: delta.id }, (items) => {
-      if (items.length > 0 && items[0].url?.includes(SRI_CONFIG.DOMINIO_SRI)) {
-        console.log('[SRI Background] Aceptando descarga marcada como peligrosa:', items[0].filename);
-        chrome.downloads.acceptDanger(delta.id);
+      if (items.length > 0) {
+        const url = items[0].url || '';
+        if (url.includes(SRI_CONFIG.DOMINIO_SRI) || estadoDescarga.activo) {
+          chrome.downloads.acceptDanger(delta.id);
+        }
       }
     });
   }
@@ -60,7 +64,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (estadoDescarga.activo && estadoDescarga.tabId === tabId) {
     estadoDescarga.detenido = true;
     estadoDescarga.error = 'La pestana del SRI fue cerrada';
-    console.warn('[SRI Background] Tab cerrada, abortando descarga');
     actualizarBadge();
     notificarProgreso();
   }
@@ -147,13 +150,12 @@ async function guardarBufferAlStorage() {
     historial[ruc].ultimaActualizacion = new Date().toISOString();
 
     await chrome.storage.local.set({ historialDescargas: historial });
-    console.log(`[SRI Background] Historial guardado: ${exitosos} exitosos, ${fallidos} fallidos`);
 
     // Limpiar buffer
     bufferSesion = { documentos: [], rucUsuario: null };
 
   } catch (e) {
-    console.error('[SRI Background] Error guardando historial:', e);
+    // Error guardando historial
   }
 }
 
@@ -170,7 +172,6 @@ async function obtenerHistorial(ruc = null) {
     }
     return historial;
   } catch (e) {
-    console.error('[SRI Background] Error obteniendo historial:', e);
     return null;
   }
 }
@@ -198,24 +199,46 @@ async function limpiarHistorialAntiguo() {
 
     await chrome.storage.local.set({ historialDescargas: historial });
   } catch (e) {
-    console.error('[SRI Background] Error limpiando historial:', e);
+    // Error limpiando historial
+  }
+}
+
+// Metodo de descarga activo: 'mojarra' o 'click'
+let metodoDescarga = 'mojarra';
+
+/**
+ * Carga la configuracion del usuario desde storage
+ */
+async function cargarConfigUsuario() {
+  const data = await chrome.storage.local.get(['sriConfig']);
+  if (data.sriConfig) {
+    if (data.sriConfig.DELAY_DESCARGA !== undefined) SRI_CONFIG.DELAY_DESCARGA = data.sriConfig.DELAY_DESCARGA;
+    if (data.sriConfig.TIMEOUT_DESCARGA !== undefined) SRI_CONFIG.TIMEOUT_DESCARGA = data.sriConfig.TIMEOUT_DESCARGA;
+    if (data.sriConfig.DELAY_PAGINA !== undefined) SRI_CONFIG.DELAY_PAGINA = data.sriConfig.DELAY_PAGINA;
+    if (data.sriConfig.TIMEOUT_PAGINA !== undefined) SRI_CONFIG.TIMEOUT_PAGINA = data.sriConfig.TIMEOUT_PAGINA;
+    if (data.sriConfig.MAX_REINTENTOS !== undefined) SRI_CONFIG.MAX_REINTENTOS = data.sriConfig.MAX_REINTENTOS;
+    if (data.sriConfig.DELAY_REINTENTO !== undefined) SRI_CONFIG.DELAY_REINTENTO = data.sriConfig.DELAY_REINTENTO;
+    if (data.sriConfig.DIAS_HISTORIAL !== undefined) SRI_CONFIG.DIAS_HISTORIAL = data.sriConfig.DIAS_HISTORIAL;
+    if (data.sriConfig.METODO_DESCARGA) metodoDescarga = data.sriConfig.METODO_DESCARGA;
   }
 }
 
 /**
- * Ejecuta mojarra.jsfcljs y espera confirmacion de descarga
+ * Ejecuta descarga usando mojarra.jsfcljs (metodo directo JSF)
+ * Llama la funcion JSF directamente sin pasar por el click del DOM
  */
-function ejecutarDescargaSRI(tabId, linkId) {
+function ejecutarDescargaMojarra(tabId, linkId) {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
-      console.warn('[SRI Background] Timeout esperando descarga:', linkId);
       pendingDownload.resolver = null;
+      pendingDownload.timestamp = null;
       resolve(false);
     }, SRI_CONFIG.TIMEOUT_DESCARGA);
 
-    pendingDownload.resolver = (exito) => {
+    pendingDownload.timestamp = Date.now();
+    pendingDownload.resolver = (resultado) => {
       clearTimeout(timeout);
-      resolve(exito);
+      resolve(resultado?.success ?? false);
     };
 
     chrome.scripting.executeScript({
@@ -235,19 +258,75 @@ function ejecutarDescargaSRI(tabId, linkId) {
       },
       args: [linkId]
     }).then((resultado) => {
-      const ejecutoOk = resultado[0]?.result?.success ?? false;
-      if (!ejecutoOk) {
+      const res = resultado[0]?.result;
+      if (!res?.success) {
         clearTimeout(timeout);
         pendingDownload.resolver = null;
+        pendingDownload.timestamp = null;
         resolve(false);
       }
-    }).catch((e) => {
-      console.error('[SRI Background] Error executeScript:', e);
+    }).catch(() => {
       clearTimeout(timeout);
       pendingDownload.resolver = null;
+      pendingDownload.timestamp = null;
       resolve(false);
     });
   });
+}
+
+/**
+ * Ejecuta descarga usando click emulado en el elemento
+ * Simula un click de usuario en el link de descarga
+ */
+function ejecutarDescargaClick(tabId, linkId) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingDownload.resolver = null;
+      pendingDownload.timestamp = null;
+      resolve(false);
+    }, SRI_CONFIG.TIMEOUT_DESCARGA);
+
+    pendingDownload.timestamp = Date.now();
+    pendingDownload.resolver = (resultado) => {
+      clearTimeout(timeout);
+      resolve(resultado?.success ?? false);
+    };
+
+    chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: 'MAIN',
+      func: (linkId) => {
+        const el = document.getElementById(linkId);
+        if (!el) return { success: false, error: 'no-element' };
+        el.click();
+        return { success: true };
+      },
+      args: [linkId]
+    }).then((resultado) => {
+      const res = resultado[0]?.result;
+      if (!res?.success) {
+        clearTimeout(timeout);
+        pendingDownload.resolver = null;
+        pendingDownload.timestamp = null;
+        resolve(false);
+      }
+    }).catch(() => {
+      clearTimeout(timeout);
+      pendingDownload.resolver = null;
+      pendingDownload.timestamp = null;
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Ejecuta la descarga usando el metodo configurado
+ */
+function ejecutarDescargaSRI(tabId, linkId) {
+  if (metodoDescarga === 'click') {
+    return ejecutarDescargaClick(tabId, linkId);
+  }
+  return ejecutarDescargaMojarra(tabId, linkId);
 }
 
 /**
@@ -258,7 +337,6 @@ async function ejecutarConReintento(tabId, linkId) {
     const exito = await ejecutarDescargaSRI(tabId, linkId);
     if (exito) return true;
     if (intento < SRI_CONFIG.MAX_REINTENTOS) {
-      console.log(`[SRI Background] Reintento ${intento + 1}/${SRI_CONFIG.MAX_REINTENTOS} para:`, linkId);
       await delay(SRI_CONFIG.DELAY_REINTENTO);
     }
   }
@@ -323,7 +401,6 @@ async function obtenerDatosPagina(tabId) {
     });
     return resultado[0]?.result;
   } catch (e) {
-    console.error('[SRI Background] Error obteniendo datos:', e);
     return { error: e.message };
   }
 }
@@ -380,7 +457,6 @@ async function esperarCambioPagina(tabId, paginaEsperada) {
     if (datos.paginacion?.actual === paginaEsperada) return true;
     await delay(500);
   }
-  console.warn(`[SRI Background] Timeout esperando pagina ${paginaEsperada}`);
   return false;
 }
 
@@ -399,7 +475,6 @@ function actualizarBadge() {
       color: estadoDescarga.fallidos > 0 ? '#ff9800' : '#4caf50'
     });
   } else {
-    // Limpiar badge despues de 5 segundos
     setTimeout(() => {
       if (!estadoDescarga.activo) {
         chrome.action.setBadgeText({ text: '' });
@@ -415,7 +490,7 @@ function notificarProgreso() {
   chrome.runtime.sendMessage({
     action: 'estadoDescarga',
     estado: { ...estadoDescarga }
-  }).catch(() => {}); // Ignorar si popup cerrado
+  }).catch(() => {});
 }
 
 /**
@@ -451,6 +526,9 @@ function notificarFinalizacion() {
  * Proceso principal de descarga de todas las paginas
  */
 async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = false) {
+  // Cargar configuracion del usuario
+  await cargarConfigUsuario();
+
   // Limpiar historial antiguo al iniciar
   limpiarHistorialAntiguo();
 
@@ -462,10 +540,8 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
   // Construir indice de descargados para O(1) lookup (vacio si se ignora historial)
   if (ignorarHistorial) {
     indiceDescargados = new Set();
-    console.log('[SRI Background] Ignorando historial - descargando todo');
   } else {
     indiceDescargados = await construirIndiceDescargados(tipoDescarga);
-    console.log(`[SRI Background] Indice de descargados: ${indiceDescargados.size} documentos`);
   }
 
   estadoDescarga = {
@@ -510,7 +586,6 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
   // Ir a primera pagina si no estamos en ella
   if (datos.paginacion.actual > 1) {
-    console.log('[SRI Background] Navegando a primera pagina...');
     await navegarPrimera(tabId);
     await esperarCambioPagina(tabId, 1);
     datos = await obtenerDatosPagina(tabId);
@@ -518,20 +593,13 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
   // Procesar todas las paginas
   for (let pag = 1; pag <= estadoDescarga.totalPaginas; pag++) {
-    if (estadoDescarga.detenido) {
-      console.log('[SRI Background] Descarga detenida por usuario');
-      break;
-    }
+    if (estadoDescarga.detenido) break;
 
     estadoDescarga.paginaActual = pag;
-    console.log(`[SRI Background] Procesando pagina ${pag} de ${estadoDescarga.totalPaginas}`);
 
     // Obtener documentos de pagina actual
     datos = await obtenerDatosPagina(tabId);
-    if (datos.error) {
-      console.error('[SRI Background] Error:', datos.error);
-      break;
-    }
+    if (datos.error) break;
 
     // Descargar documentos de esta pagina
     for (const doc of datos.documentos) {
@@ -541,7 +609,6 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
       // Verificar si ya fue descargado (O(1) con Set)
       if (indiceDescargados.has(doc.claveAcceso)) {
-        console.log('[SRI Background] Omitiendo (ya descargado):', doc.claveAcceso.substring(0, 20));
         estadoDescarga.omitidos++;
         estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
         actualizarBadge();
@@ -569,7 +636,6 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
         }
 
       } catch (e) {
-        console.error('[SRI Background] Error en documento:', e);
         exitoXml = false;
         exitoPdf = false;
         errorMsg = e.message;
@@ -579,7 +645,6 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
       if (exito) {
         estadoDescarga.exitosos++;
-        // Agregar al indice en memoria para no re-descargar si se repite
         indiceDescargados.add(doc.claveAcceso);
       } else {
         estadoDescarga.fallidos++;
@@ -608,11 +673,9 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
     // Ir a siguiente pagina si hay mas
     if (pag < estadoDescarga.totalPaginas && !estadoDescarga.detenido) {
-      console.log('[SRI Background] Navegando a siguiente pagina...');
       await navegarSiguiente(tabId);
       const cambioOk = await esperarCambioPagina(tabId, pag + 1);
       if (!cambioOk) {
-        // Fallback: delay fijo si el polling fallo
         await delay(SRI_CONFIG.DELAY_PAGINA);
       }
     }
@@ -623,7 +686,6 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
   estadoDescarga.activo = false;
   estadoDescarga.tiempoEstimado = null;
-  console.log(`[SRI Background] Descarga finalizada: ${estadoDescarga.exitosos} exitosos, ${estadoDescarga.fallidos} fallidos, ${estadoDescarga.omitidos} omitidos`);
 
   actualizarBadge();
   notificarProgreso();
@@ -687,6 +749,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'obtenerConfig') {
+    chrome.storage.local.get(['sriConfig']).then(data => {
+      sendResponse({ config: data.sriConfig || null });
+    });
+    return true;
+  }
+
+  if (request.action === 'guardarConfig') {
+    chrome.storage.local.set({ sriConfig: request.config }).then(() => {
+      // Aplicar inmediatamente
+      cargarConfigUsuario().then(() => {
+        sendResponse({ success: true });
+      });
+    }).catch(e => sendResponse({ error: e.message }));
+    return true;
+  }
+
   if (request.action === 'ejecutarDescarga') {
     const tabId = sender.tab?.id;
     if (!tabId) {
@@ -705,5 +784,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Evento cuando se instala la extension
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('SRI Document Downloader instalado correctamente');
+  // Cargar config del usuario al instalar/actualizar
+  cargarConfigUsuario();
 });

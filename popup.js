@@ -28,6 +28,10 @@ const btnExportarHistorial = document.getElementById('btnExportarHistorial');
 const btnReintentarFallidos = document.getElementById('btnReintentarFallidos');
 const resumenHistorial = document.getElementById('resumenHistorial');
 const resumenTexto = document.getElementById('resumenTexto');
+const configArea = document.getElementById('configArea');
+const btnGuardarConfig = document.getElementById('btnGuardarConfig');
+const btnResetConfig = document.getElementById('btnResetConfig');
+const configStatus = document.getElementById('configStatus');
 
 /**
  * Muestra un mensaje de estado
@@ -288,9 +292,8 @@ async function iniciarDescargaTotal() {
   // Estimacion y confirmacion
   const estimado = documentos.length * paginacion.total;
   const tipoTexto = tipoDescarga === 'ambos' ? 'XML + PDF' : tipoDescarga.toUpperCase();
-  if (!confirm(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s).\n\nDocumentos ya descargados se omitiran automaticamente.\n\n¿Continuar?`)) {
-    return;
-  }
+  const aceptado = await mostrarModal(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s).\n\nDocumentos ya descargados se omitiran automaticamente.\n\n¿Continuar?`);
+  if (!aceptado) return;
 
   btnDescargarTodo.disabled = true;
   btnDescargarSinHistorial.disabled = true;
@@ -328,9 +331,8 @@ async function iniciarDescargaSinHistorial() {
 
   const estimado = documentos.length * paginacion.total;
   const tipoTexto = tipoDescarga === 'ambos' ? 'XML + PDF' : tipoDescarga.toUpperCase();
-  if (!confirm(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s) IGNORANDO el historial.\n\nTodos los documentos se descargaran aunque ya existan.\n\n¿Continuar?`)) {
-    return;
-  }
+  const aceptado = await mostrarModal(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s) IGNORANDO el historial.\n\nTodos los documentos se descargaran aunque ya existan.\n\n¿Continuar?`);
+  if (!aceptado) return;
 
   btnDescargarTodo.disabled = true;
   btnDescargarSinHistorial.disabled = true;
@@ -409,13 +411,18 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
 
     const tab = btn.dataset.tab;
+    contentArea.style.display = 'none';
+    historialArea.style.display = 'none';
+    configArea.style.display = 'none';
+
     if (tab === 'descarga') {
       contentArea.style.display = 'block';
-      historialArea.style.display = 'none';
-    } else {
-      contentArea.style.display = 'none';
+    } else if (tab === 'historial') {
       historialArea.style.display = 'block';
       cargarHistorial();
+    } else if (tab === 'config') {
+      configArea.style.display = 'block';
+      cargarConfigUI();
     }
   });
 });
@@ -536,7 +543,8 @@ async function cargarHistorial() {
  * Limpia el historial de descargas
  */
 async function limpiarHistorial() {
-  if (!confirm('Limpiar todo el historial de descargas?\n\nEsto permitira volver a descargar todos los documentos.')) return;
+  const aceptado = await mostrarModal('¿Limpiar todo el historial de descargas?\n\nEsto permitira volver a descargar todos los documentos.');
+  if (!aceptado) return;
 
   chrome.runtime.sendMessage({ action: 'limpiarHistorial' }, (response) => {
     if (response?.success) {
@@ -618,6 +626,120 @@ async function reintentarFallidos() {
   // Iniciar descarga total (la deduplicacion se encarga de omitir exitosos)
   iniciarDescargaTotal();
 }
+
+/**
+ * Muestra un modal de confirmacion centrado (reemplaza confirm())
+ */
+function mostrarModal(texto) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('modalOverlay');
+    const textoEl = document.getElementById('modalTexto');
+    const btnAceptar = document.getElementById('modalAceptar');
+    const btnCancelar = document.getElementById('modalCancelar');
+
+    textoEl.textContent = texto;
+    overlay.style.display = 'flex';
+
+    function limpiar(resultado) {
+      overlay.style.display = 'none';
+      btnAceptar.removeEventListener('click', onAceptar);
+      btnCancelar.removeEventListener('click', onCancelar);
+      resolve(resultado);
+    }
+
+    function onAceptar() { limpiar(true); }
+    function onCancelar() { limpiar(false); }
+
+    btnAceptar.addEventListener('click', onAceptar);
+    btnCancelar.addEventListener('click', onCancelar);
+  });
+}
+
+// Valores por defecto de configuracion
+const CONFIG_DEFAULTS = {
+  DELAY_DESCARGA: 300,
+  TIMEOUT_DESCARGA: 5000,
+  DELAY_PAGINA: 1500,
+  TIMEOUT_PAGINA: 10000,
+  DELAY_REINTENTO: 1000,
+  MAX_REINTENTOS: 2,
+  DIAS_HISTORIAL: 30
+};
+
+/**
+ * Carga la configuracion actual en los inputs del UI
+ */
+function cargarConfigUI() {
+  chrome.runtime.sendMessage({ action: 'obtenerConfig' }, (response) => {
+    const cfg = response?.config || {};
+    document.getElementById('cfgDelayDescarga').value = cfg.DELAY_DESCARGA ?? CONFIG_DEFAULTS.DELAY_DESCARGA;
+    document.getElementById('cfgTimeoutDescarga').value = cfg.TIMEOUT_DESCARGA ?? CONFIG_DEFAULTS.TIMEOUT_DESCARGA;
+    document.getElementById('cfgDelayPagina').value = cfg.DELAY_PAGINA ?? CONFIG_DEFAULTS.DELAY_PAGINA;
+    document.getElementById('cfgTimeoutPagina').value = cfg.TIMEOUT_PAGINA ?? CONFIG_DEFAULTS.TIMEOUT_PAGINA;
+    document.getElementById('cfgDelayReintento').value = cfg.DELAY_REINTENTO ?? CONFIG_DEFAULTS.DELAY_REINTENTO;
+    document.getElementById('cfgMaxReintentos').value = cfg.MAX_REINTENTOS ?? CONFIG_DEFAULTS.MAX_REINTENTOS;
+    document.getElementById('cfgDiasHistorial').value = cfg.DIAS_HISTORIAL ?? CONFIG_DEFAULTS.DIAS_HISTORIAL;
+    const metodo = cfg.METODO_DESCARGA || 'mojarra';
+    const metodoRadio = document.querySelector(`input[name="metodoDescarga"][value="${metodo}"]`);
+    if (metodoRadio) metodoRadio.checked = true;
+    configStatus.textContent = '';
+  });
+}
+
+/**
+ * Guarda la configuracion desde los inputs del UI
+ */
+function guardarConfig() {
+  const config = {
+    DELAY_DESCARGA: parseInt(document.getElementById('cfgDelayDescarga').value) || CONFIG_DEFAULTS.DELAY_DESCARGA,
+    TIMEOUT_DESCARGA: parseInt(document.getElementById('cfgTimeoutDescarga').value) || CONFIG_DEFAULTS.TIMEOUT_DESCARGA,
+    DELAY_PAGINA: parseInt(document.getElementById('cfgDelayPagina').value) || CONFIG_DEFAULTS.DELAY_PAGINA,
+    TIMEOUT_PAGINA: parseInt(document.getElementById('cfgTimeoutPagina').value) || CONFIG_DEFAULTS.TIMEOUT_PAGINA,
+    DELAY_REINTENTO: parseInt(document.getElementById('cfgDelayReintento').value) || CONFIG_DEFAULTS.DELAY_REINTENTO,
+    MAX_REINTENTOS: parseInt(document.getElementById('cfgMaxReintentos').value) ?? CONFIG_DEFAULTS.MAX_REINTENTOS,
+    DIAS_HISTORIAL: parseInt(document.getElementById('cfgDiasHistorial').value) || CONFIG_DEFAULTS.DIAS_HISTORIAL,
+    METODO_DESCARGA: document.querySelector('input[name="metodoDescarga"]:checked')?.value || 'mojarra'
+  };
+
+  chrome.runtime.sendMessage({ action: 'guardarConfig', config }, (response) => {
+    if (response?.success) {
+      configStatus.textContent = 'Configuracion guardada';
+      configStatus.style.color = '#4caf50';
+    } else {
+      configStatus.textContent = 'Error al guardar';
+      configStatus.style.color = '#f44336';
+    }
+    setTimeout(() => { configStatus.textContent = ''; }, 3000);
+  });
+}
+
+/**
+ * Restaura la configuracion a valores por defecto
+ */
+function resetConfig() {
+  document.getElementById('cfgDelayDescarga').value = CONFIG_DEFAULTS.DELAY_DESCARGA;
+  document.getElementById('cfgTimeoutDescarga').value = CONFIG_DEFAULTS.TIMEOUT_DESCARGA;
+  document.getElementById('cfgDelayPagina').value = CONFIG_DEFAULTS.DELAY_PAGINA;
+  document.getElementById('cfgTimeoutPagina').value = CONFIG_DEFAULTS.TIMEOUT_PAGINA;
+  document.getElementById('cfgDelayReintento').value = CONFIG_DEFAULTS.DELAY_REINTENTO;
+  document.getElementById('cfgMaxReintentos').value = CONFIG_DEFAULTS.MAX_REINTENTOS;
+  document.getElementById('cfgDiasHistorial').value = CONFIG_DEFAULTS.DIAS_HISTORIAL;
+  const mojarraRadio = document.querySelector('input[name="metodoDescarga"][value="mojarra"]');
+  if (mojarraRadio) mojarraRadio.checked = true;
+
+  // Guardar los defaults
+  const resetConfig = { ...CONFIG_DEFAULTS, METODO_DESCARGA: 'mojarra' };
+  chrome.runtime.sendMessage({ action: 'guardarConfig', config: resetConfig }, (response) => {
+    if (response?.success) {
+      configStatus.textContent = 'Restaurado a valores por defecto';
+      configStatus.style.color = '#2196f3';
+    }
+    setTimeout(() => { configStatus.textContent = ''; }, 3000);
+  });
+}
+
+btnGuardarConfig.addEventListener('click', guardarConfig);
+btnResetConfig.addEventListener('click', resetConfig);
 
 /**
  * Restaura el tipo de descarga guardado previamente
