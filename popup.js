@@ -324,26 +324,34 @@ async function iniciarDescarga() {
 
   const tipoDescarga = getTipoDescarga();
 
+  // Filtrar documentos por indices seleccionados
+  const docsSeleccionados = documentos.filter(d => indices.includes(d.index));
+
   btnDescargar.disabled = true;
   btnDescargarTodo.disabled = true;
+  btnDetener.disabled = false;
   progressContainer.classList.add('active');
+  controlesDescarga.style.display = 'none';
   progressFill.style.width = '0%';
-  progressText.textContent = `Descargando 0 de ${indices.length}...`;
+  progressText.textContent = `Descargando 0 de ${docsSeleccionados.length}...`;
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    chrome.tabs.sendMessage(tab.id, {
-      action: 'descargarSeleccionados',
-      indices: indices,
-      tipoDescarga: tipoDescarga
+    chrome.runtime.sendMessage({
+      action: 'descargarPaginaActual',
+      tabId: tab.id,
+      tipoDescarga: tipoDescarga,
+      indices: indices
     });
 
   } catch (error) {
     mostrarEstado(`Error: ${error.message}`, 'error');
     btnDescargar.disabled = false;
     btnDescargarTodo.disabled = false;
+    btnDetener.disabled = true;
     progressContainer.classList.remove('active');
+    controlesDescarga.style.display = 'block';
   }
 }
 
