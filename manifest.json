@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SRI Document Downloader",
+  "name": "Descargador de Comprobantes SRI",
   "version": "1.3.0",
-  "description": "Descarga documentos XML y PDF del portal SRI Ecuador",
+  "description": "Descarga masiva de comprobantes XML y PDF desde el portal SRI Ecuador",
   "permissions": [
     "activeTab",
     "scripting",

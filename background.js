@@ -1,5 +1,5 @@
 /**
- * SRI Document Downloader - Background Service Worker
+ * Descargador de Comprobantes SRI - Background Service Worker
  * Maneja la descarga de forma persistente (no se detiene al cerrar popup)
  * Guarda historial en chrome.storage.local
  * Verifica descargas reales con chrome.downloads API
@@ -664,7 +664,7 @@ function notificarFinalizacion() {
   chrome.notifications.create({
     type: 'basic',
     iconUrl: 'icons/icon128.png',
-    title: 'SRI Document Downloader',
+    title: 'Descargador de Comprobantes SRI',
     message: mensaje
   });
 }

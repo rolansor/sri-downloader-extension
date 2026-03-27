@@ -1,5 +1,5 @@
 /**
- * SRI Document Downloader - Popup Script
+ * Descargador de Comprobantes SRI - Popup Script
  * Maneja la interfaz de usuario del popup de la extension.
  * Se comunica con el background service worker para iniciar/detener descargas
  * y con el content script para obtener datos de la pagina actual del SRI.

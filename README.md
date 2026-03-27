@@ -1,4 +1,4 @@
-# SRI Document Downloader - Extension Chrome
+# Descargador de Comprobantes SRI - Extension Chrome
 
 Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea.sri.gob.ec).
 

@@ -1,5 +1,5 @@
 /**
- * SRI Document Downloader - Content Script
+ * Descargador de Comprobantes SRI - Content Script
  * Extractor de datos del DOM del SRI. Solo lectura, no ejecuta descargas.
  * Se inyecta en paginas de srienlinea.sri.gob.ec via manifest content_scripts.
  */

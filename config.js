@@ -1,5 +1,5 @@
 /**
- * SRI Document Downloader - Configuracion centralizada
+ * Descargador de Comprobantes SRI - Configuracion centralizada
  * Compartido entre background.js y content.js
  */
 
