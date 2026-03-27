@@ -30,7 +30,10 @@ let estadoDescarga = {
 // Sistema de deteccion de descargas basado en timing
 // Cuando hacemos click en un link del SRI, esperamos que onCreated se dispare
 // dentro del timeout. No filtramos por URL para evitar falsos negativos.
-let pendingDownload = { resolver: null, timestamp: null };
+let pendingDownload = { resolver: null, timestamp: null, docMetadata: null, tipoArchivo: null };
+
+// Map de metadata por downloadId para onDeterminingFilename
+let downloadMetadataMap = new Map();
 
 chrome.downloads.onCreated.addListener((downloadItem) => {
   // Solo aceptar si hay un resolver pendiente y fue dentro de la ventana de tiempo
@@ -38,11 +41,48 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
     const elapsed = Date.now() - pendingDownload.timestamp;
     // Solo aceptar descargas que ocurran dentro de la ventana activa
     if (elapsed < SRI_CONFIG.TIMEOUT_DESCARGA) {
+      // Guardar metadata para onDeterminingFilename antes de limpiar
+      if (pendingDownload.docMetadata) {
+        downloadMetadataMap.set(downloadItem.id, {
+          docMetadata: { ...pendingDownload.docMetadata, rucUsuario: estadoDescarga.rucUsuario },
+          tipoArchivo: pendingDownload.tipoArchivo
+        });
+      }
       pendingDownload.resolver({ success: true, downloadId: downloadItem.id });
       pendingDownload.resolver = null;
       pendingDownload.timestamp = null;
     }
   }
+});
+
+// Interceptar descargas para organizar en carpetas
+chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
+  const meta = downloadMetadataMap.get(downloadItem.id);
+
+  if (!meta || !SRI_CONFIG.ORGANIZACION?.HABILITADO) {
+    suggest();
+    return true;
+  }
+
+  downloadMetadataMap.delete(downloadItem.id);
+
+  // Obtener extension del archivo original
+  const nombreOriginal = downloadItem.filename || '';
+  let extension = '';
+  if (nombreOriginal.includes('.')) {
+    extension = '.' + nombreOriginal.split('.').pop().toLowerCase();
+  } else {
+    extension = meta.tipoArchivo === 'xml' ? '.xml' : '.pdf';
+  }
+
+  const rutaCompleta = construirRutaArchivo(meta.docMetadata, meta.tipoArchivo, extension);
+
+  if (rutaCompleta) {
+    suggest({ filename: rutaCompleta, conflictAction: 'overwrite' });
+  } else {
+    suggest();
+  }
+  return true;
 });
 
 // Aceptar automaticamente descargas del SRI marcadas como "peligrosas"
@@ -220,6 +260,9 @@ async function cargarConfigUsuario() {
     if (data.sriConfig.DELAY_REINTENTO !== undefined) SRI_CONFIG.DELAY_REINTENTO = data.sriConfig.DELAY_REINTENTO;
     if (data.sriConfig.DIAS_HISTORIAL !== undefined) SRI_CONFIG.DIAS_HISTORIAL = data.sriConfig.DIAS_HISTORIAL;
     if (data.sriConfig.METODO_DESCARGA) metodoDescarga = data.sriConfig.METODO_DESCARGA;
+    if (data.sriConfig.ORGANIZACION !== undefined) {
+      SRI_CONFIG.ORGANIZACION = { ...SRI_CONFIG.ORGANIZACION, ...data.sriConfig.ORGANIZACION };
+    }
   }
 }
 
@@ -227,15 +270,19 @@ async function cargarConfigUsuario() {
  * Ejecuta descarga usando mojarra.jsfcljs (metodo directo JSF)
  * Llama la funcion JSF directamente sin pasar por el click del DOM
  */
-function ejecutarDescargaMojarra(tabId, linkId) {
+function ejecutarDescargaMojarra(tabId, linkId, docMetadata, tipoArchivo) {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       pendingDownload.resolver = null;
       pendingDownload.timestamp = null;
+      pendingDownload.docMetadata = null;
+      pendingDownload.tipoArchivo = null;
       resolve(false);
     }, SRI_CONFIG.TIMEOUT_DESCARGA);
 
     pendingDownload.timestamp = Date.now();
+    pendingDownload.docMetadata = docMetadata || null;
+    pendingDownload.tipoArchivo = tipoArchivo || null;
     pendingDownload.resolver = (resultado) => {
       clearTimeout(timeout);
       resolve(resultado?.success ?? false);
@@ -263,12 +310,16 @@ function ejecutarDescargaMojarra(tabId, linkId) {
         clearTimeout(timeout);
         pendingDownload.resolver = null;
         pendingDownload.timestamp = null;
+        pendingDownload.docMetadata = null;
+        pendingDownload.tipoArchivo = null;
         resolve(false);
       }
     }).catch(() => {
       clearTimeout(timeout);
       pendingDownload.resolver = null;
       pendingDownload.timestamp = null;
+      pendingDownload.docMetadata = null;
+      pendingDownload.tipoArchivo = null;
       resolve(false);
     });
   });
@@ -278,15 +329,19 @@ function ejecutarDescargaMojarra(tabId, linkId) {
  * Ejecuta descarga usando click emulado en el elemento
  * Simula un click de usuario en el link de descarga
  */
-function ejecutarDescargaClick(tabId, linkId) {
+function ejecutarDescargaClick(tabId, linkId, docMetadata, tipoArchivo) {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       pendingDownload.resolver = null;
       pendingDownload.timestamp = null;
+      pendingDownload.docMetadata = null;
+      pendingDownload.tipoArchivo = null;
       resolve(false);
     }, SRI_CONFIG.TIMEOUT_DESCARGA);
 
     pendingDownload.timestamp = Date.now();
+    pendingDownload.docMetadata = docMetadata || null;
+    pendingDownload.tipoArchivo = tipoArchivo || null;
     pendingDownload.resolver = (resultado) => {
       clearTimeout(timeout);
       resolve(resultado?.success ?? false);
@@ -308,12 +363,16 @@ function ejecutarDescargaClick(tabId, linkId) {
         clearTimeout(timeout);
         pendingDownload.resolver = null;
         pendingDownload.timestamp = null;
+        pendingDownload.docMetadata = null;
+        pendingDownload.tipoArchivo = null;
         resolve(false);
       }
     }).catch(() => {
       clearTimeout(timeout);
       pendingDownload.resolver = null;
       pendingDownload.timestamp = null;
+      pendingDownload.docMetadata = null;
+      pendingDownload.tipoArchivo = null;
       resolve(false);
     });
   });
@@ -322,19 +381,19 @@ function ejecutarDescargaClick(tabId, linkId) {
 /**
  * Ejecuta la descarga usando el metodo configurado
  */
-function ejecutarDescargaSRI(tabId, linkId) {
+function ejecutarDescargaSRI(tabId, linkId, docMetadata, tipoArchivo) {
   if (metodoDescarga === 'click') {
-    return ejecutarDescargaClick(tabId, linkId);
+    return ejecutarDescargaClick(tabId, linkId, docMetadata, tipoArchivo);
   }
-  return ejecutarDescargaMojarra(tabId, linkId);
+  return ejecutarDescargaMojarra(tabId, linkId, docMetadata, tipoArchivo);
 }
 
 /**
  * Ejecuta descarga con reintentos automaticos
  */
-async function ejecutarConReintento(tabId, linkId) {
+async function ejecutarConReintento(tabId, linkId, docMetadata, tipoArchivo) {
   for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
-    const exito = await ejecutarDescargaSRI(tabId, linkId);
+    const exito = await ejecutarDescargaSRI(tabId, linkId, docMetadata, tipoArchivo);
     if (exito) return true;
     if (intento < SRI_CONFIG.MAX_REINTENTOS) {
       await delay(SRI_CONFIG.DELAY_REINTENTO);
@@ -365,8 +424,11 @@ async function obtenerDatosPagina(tabId) {
 
             const ruc = celdas[1]?.textContent?.trim().split('\n')[0] || '';
             const razonSocial = celdas[1]?.textContent?.trim().split('\n')[1] || '';
-            const tipoDoc = celdas[2]?.textContent?.trim().split('\n')[0] || '';
-            const serie = celdas[2]?.textContent?.trim().split('\n')[1] || '';
+            const celda2Texto = celdas[2]?.textContent?.trim() || '';
+            const tipoDoc = celda2Texto;
+            // Extraer serie del texto (ej: "Factura  001-006-055715817" -> "001-006-055715817")
+            const serieMatch = celda2Texto.match(/(\d{3}-\d{3}-\d+)/);
+            const serie = serieMatch ? serieMatch[1] : '';
             const claveAcceso = celdas[3]?.textContent?.trim() || '';
             const fechaEmision = celdas[4]?.textContent?.trim() || '';
             const fechaAutorizacion = celdas[5]?.textContent?.trim() || '';
@@ -462,6 +524,91 @@ async function esperarCambioPagina(tabId, paginaEsperada) {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// --- Funciones de organizacion de archivos ---
+
+function sanitizarNombreCarpeta(nombre) {
+  return nombre
+    .replace(/[/\\:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 100) || 'sin_nombre';
+}
+
+function parsearFechaSRI(fechaStr) {
+  if (!fechaStr) return null;
+  const partes = fechaStr.split('/');
+  if (partes.length >= 3) {
+    return { dia: partes[0], mes: partes[1], anio: partes[2].substring(0, 4) };
+  }
+  return null;
+}
+
+/**
+ * Extrae solo el tipo de documento sin la serie
+ * Ej: "Factura  001-001-034700490" -> "factura"
+ * @param {string} tipoDoc - Tipo y serie del documento desde el DOM
+ * @returns {string} Tipo de documento limpio en minusculas
+ */
+function limpiarTipoDoc(tipoDoc) {
+  const tipoLimpio = (tipoDoc || 'sin_tipo').replace(/\s+\d{3}-\d{3}-\d+.*$/, '').trim();
+  return sanitizarNombreCarpeta(tipoLimpio || 'sin_tipo').toLowerCase().replace(/\s+/g, '_');
+}
+
+function construirNombreArchivo(formato, metadata, extension) {
+  switch (formato) {
+    case 'ruc_serie': {
+      const ruc = metadata.ruc || 'sin_ruc';
+      const serie = (metadata.serie || 'sin_serie').replace(/[-\s]+/g, '');
+      return `${ruc}_${serie}${extension}`;
+    }
+    case 'razon_serie': {
+      const razon = sanitizarNombreCarpeta(metadata.razonSocial || 'sin_razon').replace(/\s+/g, '_');
+      const serie = (metadata.serie || 'sin_serie').replace(/[-\s]+/g, '');
+      return `${razon}_${serie}${extension}`;
+    }
+    case 'claveAcceso':
+    default:
+      return `${metadata.claveAcceso || 'sin_clave'}${extension}`;
+  }
+}
+
+/**
+ * Construye la ruta completa del archivo organizado.
+ * Estructura fija: carpetaRaiz / [ruc+fecha o fecha+ruc] / recibidos / tipoDoc / nombre.ext
+ * @param {Object} metadata - Metadata del documento
+ * @param {string} tipoArchivo - 'xml' o 'pdf'
+ * @param {string} extension - Extension del archivo con punto (.xml, .pdf)
+ * @returns {string|null} Ruta relativa completa o null si organizacion deshabilitada
+ */
+function construirRutaArchivo(metadata, tipoArchivo, extension) {
+  if (!SRI_CONFIG.ORGANIZACION?.HABILITADO) return null;
+
+  const org = SRI_CONFIG.ORGANIZACION;
+  const fechaParsed = parsearFechaSRI(metadata.fechaEmision);
+  const ruc = metadata.rucUsuario || 'sin_ruc';
+  const anio = fechaParsed?.anio || 'sin_anio';
+  const mes = fechaParsed?.mes || 'sin_mes';
+
+  const segmentos = [org.CARPETA_RAIZ || 'descargas_sri'];
+
+  // Niveles configurables: orden del RUC y fecha
+  if (org.ORDEN === 'fecha_ruc') {
+    segmentos.push(anio, mes, ruc);
+  } else {
+    segmentos.push(ruc, anio, mes);
+  }
+
+  // Niveles fijos: tipo movimiento / tipo documento / tipo archivo
+  segmentos.push('recibidos');
+  segmentos.push(limpiarTipoDoc(metadata.tipoDoc));
+  segmentos.push(tipoArchivo === 'xml' ? 'xml' : 'pdf');
+
+  // Nombre del archivo
+  segmentos.push(construirNombreArchivo(org.FORMATO_NOMBRE, metadata, extension));
+
+  return segmentos.join('/');
 }
 
 /**
@@ -616,21 +763,33 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
         continue;
       }
 
-      let exitoXml = true;
-      let exitoPdf = true;
+      // Solo marcar exito si realmente se descargo ese tipo
+      let exitoXml = false;
+      let exitoPdf = false;
       let errorMsg = null;
 
       try {
+        // Metadata del documento para organizar archivos
+        const docMeta = {
+          claveAcceso: doc.claveAcceso,
+          ruc: doc.ruc,
+          razonSocial: doc.razonSocial,
+          tipoDoc: doc.tipoDoc,
+          serie: doc.serie,
+          fechaEmision: doc.fechaEmision,
+          rucUsuario: estadoDescarga.rucUsuario
+        };
+
         // Descargar XML con reintentos
         if ((tipoDescarga === 'xml' || tipoDescarga === 'ambos') && doc.tieneXml) {
-          exitoXml = await ejecutarConReintento(tabId, doc.linkXmlId);
+          exitoXml = await ejecutarConReintento(tabId, doc.linkXmlId, docMeta, 'xml');
           if (!exitoXml) errorMsg = 'Error descargando XML';
           await delay(SRI_CONFIG.DELAY_DESCARGA);
         }
 
         // Descargar PDF con reintentos
         if ((tipoDescarga === 'pdf' || tipoDescarga === 'ambos') && doc.tienePdf) {
-          exitoPdf = await ejecutarConReintento(tabId, doc.linkPdfId);
+          exitoPdf = await ejecutarConReintento(tabId, doc.linkPdfId, docMeta, 'pdf');
           if (!exitoPdf) errorMsg = errorMsg ? 'Error descargando XML y PDF' : 'Error descargando PDF';
           await delay(SRI_CONFIG.DELAY_DESCARGA);
         }
@@ -641,7 +800,11 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
         errorMsg = e.message;
       }
 
-      const exito = exitoXml && exitoPdf;
+      // Determinar exito segun lo que se intento descargar
+      let exito;
+      if (tipoDescarga === 'xml') exito = exitoXml;
+      else if (tipoDescarga === 'pdf') exito = exitoPdf;
+      else exito = exitoXml && exitoPdf;
 
       if (exito) {
         estadoDescarga.exitosos++;
@@ -683,6 +846,9 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
   // Guardar buffer al storage
   await guardarBufferAlStorage();
+
+  // Limpiar metadata map
+  downloadMetadataMap.clear();
 
   estadoDescarga.activo = false;
   estadoDescarga.tiempoEstimado = null;
@@ -764,6 +930,54 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     }).catch(e => sendResponse({ error: e.message }));
     return true;
+  }
+
+  // Navegar a comprobantes recibidos y setear dia = "Todos" + tipo de comprobante
+  if (request.action === 'navegarYSetearDia') {
+    const tabId = request.tabId;
+    const tipoComprobante = request.tipoComprobante || null;
+    chrome.tabs.update(tabId, { url: request.url });
+
+    // Esperar a que la pagina cargue y setear los selects del formulario
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        // Reintentar varias veces porque la pagina SRI carga contenido con AJAX
+        let intentos = 0;
+        const intervalo = setInterval(() => {
+          intentos++;
+          chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: (tipo) => {
+              const selDia = document.getElementById('frmPrincipal:dia');
+              if (!selDia) return false;
+              // Setear dia = "Todos"
+              selDia.value = '0';
+              selDia.dispatchEvent(new Event('change', { bubbles: true }));
+              // Setear tipo de comprobante si se especifico
+              if (tipo) {
+                const selTipo = document.getElementById('frmPrincipal:cmbTipoComprobante');
+                if (selTipo) {
+                  selTipo.value = tipo;
+                  selTipo.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+              }
+              return true;
+            },
+            args: [tipoComprobante]
+          }).then(result => {
+            if (result?.[0]?.result || intentos >= 10) {
+              clearInterval(intervalo);
+            }
+          }).catch(() => clearInterval(intervalo));
+        }, 1000);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+
+    sendResponse({ status: 'navegando' });
+    return false;
   }
 
   if (request.action === 'ejecutarDescarga') {

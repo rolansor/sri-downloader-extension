@@ -168,6 +168,12 @@ body {
   margin-top: 10px;
 }
 
+.tabs.tabs-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
 .tab-btn {
   flex: 1;
   padding: 8px;
@@ -374,6 +380,86 @@ body {
   text-align: center;
   margin-top: 8px;
   min-height: 16px;
+}
+
+/* Accesos directos SRI */
+.sri-links-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sri-link {
+  display: block;
+  text-align: center;
+  padding: 10px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.sri-link:hover {
+  background: #e3f2fd;
+  border-color: #1976d2;
+  color: #1976d2;
+}
+
+.sri-link-primary {
+  background: #1976d2;
+  color: white;
+  border-color: #1976d2;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 12px;
+}
+
+.sri-link-primary:hover {
+  background: #1565c0;
+  color: white;
+}
+
+.sri-submenu-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sri-back-btn {
+  font-size: 12px;
+  color: #1976d2;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sri-back-btn:hover {
+  text-decoration: underline;
+}
+
+.sri-submenu-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  flex: 1;
+  text-align: center;
+  padding-right: 40px;
+}
+
+/* Organizacion de archivos */
+.preview-ruta {
+  font-family: monospace;
+  font-size: 11px;
+  color: #666;
+  background: #f5f5f5;
+  padding: 8px;
+  border-radius: 4px;
+  word-break: break-all;
+  border: 1px solid #e0e0e0;
 }
 
 /* Modal */
@@ -589,5 +675,41 @@ body {
     background: #333;
     border-color: #555;
     color: #e0e0e0;
+  }
+
+  .sri-link {
+    border-color: #555;
+    color: #e0e0e0;
+  }
+
+  .sri-link:hover {
+    background: #1a2a3e;
+    border-color: #42a5f5;
+    color: #42a5f5;
+  }
+
+  .sri-link-primary {
+    background: #1e88e5;
+    color: white;
+    border-color: #1e88e5;
+  }
+
+  .sri-link-primary:hover {
+    background: #1565c0;
+    color: white;
+  }
+
+  .sri-back-btn {
+    color: #42a5f5;
+  }
+
+  .sri-submenu-title {
+    color: #e0e0e0;
+  }
+
+  .preview-ruta {
+    background: #333;
+    color: #999;
+    border-color: #555;
   }
 }

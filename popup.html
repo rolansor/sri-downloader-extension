@@ -10,15 +10,21 @@
   <div class="header">
     <h1>SRI Document Downloader</h1>
     <p>Descarga XML y PDF del portal SRI</p>
-    <div class="tabs">
+    <div class="tabs tabs-grid">
       <button class="tab-btn active" data-tab="descarga">Descargar</button>
       <button class="tab-btn" data-tab="historial">Historial</button>
-      <button class="tab-btn" data-tab="config">Config</button>
+      <button class="tab-btn" data-tab="config">Configuracion</button>
+      <button class="tab-btn" data-tab="organizacion">Organizacion</button>
     </div>
   </div>
 
   <div id="statusBox" class="status-box info">
     <p id="statusMessage">Cargando informacion...</p>
+  </div>
+
+  <!-- Accesos directos SRI (cuando no hay tabla) -->
+  <div id="sriLinksArea" style="display: none;">
+    <div class="options-section" id="sriMenuContainer"></div>
   </div>
 
   <div id="contentArea" style="display: none;">
@@ -180,6 +186,62 @@
     <p id="configStatus" class="config-status"></p>
   </div>
 
+  <!-- Tab Organizacion -->
+  <div id="organizacionArea" class="tab-content" style="display: none;">
+    <div class="options-section">
+      <div class="config-row">
+        <label class="config-label" for="cfgOrgHabilitado">Organizar en carpetas</label>
+        <input type="checkbox" id="cfgOrgHabilitado">
+      </div>
+
+      <div id="orgDetalles">
+        <div class="config-row" style="margin-top: 8px;">
+          <label class="config-label" for="cfgCarpetaRaiz">Carpeta raiz</label>
+          <input type="text" id="cfgCarpetaRaiz" class="config-input" style="width: 140px;" placeholder="descargas_sri">
+        </div>
+
+        <div class="config-row" style="margin-top: 8px;">
+          <label class="config-label" for="cfgOrden">Orden de carpetas</label>
+          <select id="cfgOrden" class="config-input" style="width: 140px; text-align: left;">
+            <option value="ruc_fecha">RUC / Anio / Mes</option>
+            <option value="fecha_ruc">Anio / Mes / RUC</option>
+          </select>
+        </div>
+
+        <p style="font-size: 10px; color: #999; margin-top: 6px;">
+          Subcarpetas fijas: recibidos / tipo_documento
+        </p>
+
+        <div style="margin-top: 10px;">
+          <label class="config-label" style="display: block; margin-bottom: 6px;">Nombre del archivo:</label>
+          <div class="radio-group" style="flex-direction: column; gap: 4px;">
+            <label class="radio-option">
+              <input type="radio" name="formatoNombre" value="claveAcceso">
+              Clave de acceso
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="formatoNombre" value="ruc_serie">
+              RUC emisor + Serie
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="formatoNombre" value="razon_serie">
+              Razon social + Serie
+            </label>
+          </div>
+        </div>
+
+        <div style="margin-top: 10px;">
+          <label class="config-label" style="display: block; margin-bottom: 4px;">Vista previa:</label>
+          <div id="cfgPreviewRuta" class="preview-ruta"></div>
+        </div>
+      </div>
+    </div>
+
+    <button id="btnGuardarOrg" class="btn btn-primary">Guardar organizacion</button>
+    <button id="btnResetOrg" class="btn btn-secondary">Restaurar valores por defecto</button>
+    <p id="orgStatus" class="config-status"></p>
+  </div>
+
   <!-- Modal de confirmacion -->
   <div id="modalOverlay" class="modal-overlay" style="display: none;">
     <div class="modal-box">
@@ -192,7 +254,7 @@
   </div>
 
   <div class="footer">
-    v1.2.0 - Solo para uso en srienlinea.sri.gob.ec
+    v1.3.0 - Solo para uso en srienlinea.sri.gob.ec
   </div>
 
   <script src="popup.js"></script>
