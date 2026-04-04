@@ -51,6 +51,8 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
       pendingDownload.resolver({ success: true, downloadId: downloadItem.id });
       pendingDownload.resolver = null;
       pendingDownload.timestamp = null;
+      pendingDownload.docMetadata = null;
+      pendingDownload.tipoArchivo = null;
     }
   }
 });
@@ -60,7 +62,8 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   const meta = downloadMetadataMap.get(downloadItem.id);
 
   if (!meta || !SRI_CONFIG.ORGANIZACION?.HABILITADO) {
-    suggest();
+    // Usar filename original - suggest() sin args puede cancelar la descarga
+    suggest({ filename: downloadItem.filename });
     return true;
   }
 
@@ -80,7 +83,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   if (rutaCompleta) {
     suggest({ filename: rutaCompleta, conflictAction: 'overwrite' });
   } else {
-    suggest();
+    suggest({ filename: downloadItem.filename });
   }
   return true;
 });
@@ -92,7 +95,13 @@ chrome.downloads.onChanged.addListener((delta) => {
       if (items.length > 0) {
         const url = items[0].url || '';
         if (url.includes(SRI_CONFIG.DOMINIO_SRI) || estadoDescarga.activo) {
-          chrome.downloads.acceptDanger(delta.id);
+          try {
+            if (chrome.downloads.acceptDanger) {
+              chrome.downloads.acceptDanger(delta.id);
+            }
+          } catch (e) {
+            // acceptDanger puede no estar disponible en versiones recientes de Chrome/Edge
+          }
         }
       }
     });

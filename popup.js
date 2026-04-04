@@ -1413,7 +1413,29 @@ async function navegarSRI(url, tipoComprobante) {
  * Punto de entrada principal: al cargar el DOM del popup,
  * restaura las preferencias del usuario y carga los documentos de la pagina actual.
  */
+/**
+ * Detecta si el navegador es Edge y muestra advertencia sobre SmartScreen.
+ * La advertencia se puede descartar y se recuerda la preferencia.
+ */
+function detectarEdge() {
+  const isEdge = navigator.userAgent.includes('Edg/');
+  if (!isEdge) return;
+
+  chrome.storage.local.get(['edgeWarningDismissed'], (data) => {
+    if (data.edgeWarningDismissed) return;
+
+    const warning = document.getElementById('edgeWarning');
+    warning.style.display = 'block';
+
+    document.getElementById('btnDismissEdge').addEventListener('click', () => {
+      warning.style.display = 'none';
+      chrome.storage.local.set({ edgeWarningDismissed: true });
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  detectarEdge();
   restaurarTipoDescarga();
   cargarDocumentos();
 });
