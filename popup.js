@@ -33,6 +33,8 @@ const selectAll = document.getElementById('selectAll');
 const btnDescargarTodo = document.getElementById('btnDescargarTodo');
 /** Boton para iniciar descarga ignorando el historial (re-descarga todo) */
 const btnDescargarSinHistorial = document.getElementById('btnDescargarSinHistorial');
+/** Boton para descargar solo los documentos seleccionados de la pagina actual */
+const btnDescargarSeleccionados = document.getElementById('btnDescargarSeleccionados');
 /** Boton para detener la descarga en progreso */
 const btnDetener = document.getElementById('btnDetener');
 /** Contenedor de la barra de progreso */
@@ -270,6 +272,7 @@ function actualizarUIEstado(estado) {
     btnDetener.disabled = true;
     btnDescargarTodo.disabled = false;
     btnDescargarSinHistorial.disabled = false;
+    btnDescargarSeleccionados.disabled = false;
   }
 }
 
@@ -342,8 +345,9 @@ async function cargarDocumentos() {
     // Obtener la tab activa del navegador
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    // Verificar que estamos en el dominio del SRI
-    if (!tab.url.includes('srienlinea.sri.gob.ec')) {
+    // Verificar que estamos en el dominio del SRI (tab.url puede ser
+    // undefined en paginas restringidas del navegador)
+    if (!tab?.url || !tab.url.includes('srienlinea.sri.gob.ec')) {
       mostrarEstado('Navega a srienlinea.sri.gob.ec para comenzar', 'info');
       mostrarSriLinks();
       return;
@@ -431,6 +435,7 @@ async function iniciarDescargaTotal() {
   // Deshabilitar controles y mostrar barra de progreso
   btnDescargarTodo.disabled = true;
   btnDescargarSinHistorial.disabled = true;
+  btnDescargarSeleccionados.disabled = true;
   btnDetener.disabled = false;
   progressContainer.classList.add('active');
   controlesDescarga.style.display = 'none';
@@ -446,6 +451,10 @@ async function iniciarDescargaTotal() {
       tabId: tab.id,
       tipoDescarga: tipoDescarga,
       ignorarHistorial: false
+    }, (response) => {
+      if (response?.status === 'ocupado') {
+        mostrarEstado('Ya hay una descarga en progreso', 'info');
+      }
     });
 
   } catch (error) {
@@ -453,6 +462,7 @@ async function iniciarDescargaTotal() {
     mostrarEstado(`Error: ${error.message}`, 'error');
     btnDescargarTodo.disabled = false;
     btnDescargarSinHistorial.disabled = false;
+    btnDescargarSeleccionados.disabled = false;
     btnDetener.disabled = true;
     progressContainer.classList.remove('active');
     controlesDescarga.style.display = 'block';
@@ -476,6 +486,7 @@ async function iniciarDescargaSinHistorial() {
   // Deshabilitar controles y mostrar barra de progreso
   btnDescargarTodo.disabled = true;
   btnDescargarSinHistorial.disabled = true;
+  btnDescargarSeleccionados.disabled = true;
   btnDetener.disabled = false;
   progressContainer.classList.add('active');
   controlesDescarga.style.display = 'none';
@@ -491,6 +502,10 @@ async function iniciarDescargaSinHistorial() {
       tabId: tab.id,
       tipoDescarga: tipoDescarga,
       ignorarHistorial: true
+    }, (response) => {
+      if (response?.status === 'ocupado') {
+        mostrarEstado('Ya hay una descarga en progreso', 'info');
+      }
     });
 
   } catch (error) {
@@ -498,6 +513,64 @@ async function iniciarDescargaSinHistorial() {
     mostrarEstado(`Error: ${error.message}`, 'error');
     btnDescargarTodo.disabled = false;
     btnDescargarSinHistorial.disabled = false;
+    btnDescargarSeleccionados.disabled = false;
+    btnDetener.disabled = true;
+    progressContainer.classList.remove('active');
+    controlesDescarga.style.display = 'block';
+  }
+}
+
+/**
+ * Descarga solo los documentos marcados con checkbox en la pagina actual.
+ * No aplica deduplicacion: la seleccion es explicita del usuario.
+ */
+async function iniciarDescargaSeleccionados() {
+  const indices = getIndicesSeleccionados();
+  if (indices.length === 0) {
+    mostrarEstado('No hay documentos seleccionados', 'info');
+    return;
+  }
+
+  // Mapear indices de fila a claves de acceso
+  const claves = indices
+    .map(i => documentos.find(d => d.index === i)?.claveAcceso)
+    .filter(Boolean);
+
+  if (claves.length === 0) {
+    mostrarEstado('No se pudieron identificar los documentos seleccionados', 'error');
+    return;
+  }
+
+  // Deshabilitar controles y mostrar barra de progreso
+  btnDescargarTodo.disabled = true;
+  btnDescargarSinHistorial.disabled = true;
+  btnDescargarSeleccionados.disabled = true;
+  btnDetener.disabled = false;
+  progressContainer.classList.add('active');
+  controlesDescarga.style.display = 'none';
+  progressFill.style.width = '0%';
+  progressText.textContent = 'Iniciando descarga...';
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    chrome.runtime.sendMessage({
+      action: 'iniciarDescargaSeleccionados',
+      tabId: tab.id,
+      tipoDescarga: getTipoDescarga(),
+      claves: claves
+    }, (response) => {
+      if (response?.status === 'ocupado') {
+        mostrarEstado('Ya hay una descarga en progreso', 'info');
+      }
+    });
+
+  } catch (error) {
+    // Restaurar UI en caso de error al iniciar
+    mostrarEstado(`Error: ${error.message}`, 'error');
+    btnDescargarTodo.disabled = false;
+    btnDescargarSinHistorial.disabled = false;
+    btnDescargarSeleccionados.disabled = false;
     btnDetener.disabled = true;
     progressContainer.classList.remove('active');
     controlesDescarga.style.display = 'block';
@@ -543,6 +616,8 @@ selectAll.addEventListener('change', () => {
 btnDescargarTodo.addEventListener('click', iniciarDescargaTotal);
 /** Boton "Descargar ignorando historial": inicia descarga forzada */
 btnDescargarSinHistorial.addEventListener('click', iniciarDescargaSinHistorial);
+
+btnDescargarSeleccionados.addEventListener('click', iniciarDescargaSeleccionados);
 /** Boton "Detener": detiene la descarga en progreso */
 btnDetener.addEventListener('click', detenerDescarga);
 /** Boton "Limpiar historial": elimina todo el historial de descargas */
@@ -775,6 +850,13 @@ async function exportarHistorial() {
     const historial = response.historial;
     const filas = [];
 
+    // Neutraliza inyeccion de formulas en Excel/Sheets (celdas que inician con = + - @)
+    const celdaSegura = (v) => {
+      let texto = String(v || '');
+      if (/^[=+\-@]/.test(texto)) texto = `'${texto}`;
+      return `"${texto.replace(/"/g, '""')}"`;
+    };
+
     // Cabecera del CSV
     filas.push(['RUC Emisor', 'Razon Social', 'Tipo Doc', 'Serie', 'Clave Acceso', 'Fecha Emision', 'Fecha Autorizacion', 'Estado', 'Error', 'Fecha Descarga'].join(','));
 
@@ -785,14 +867,14 @@ async function exportarHistorial() {
         for (const doc of sesion.documentos) {
           const fila = [
             doc.ruc || '',
-            `"${(doc.razonSocial || '').replace(/"/g, '""')}"`,
-            doc.tipoDoc || '',
-            doc.serie || '',
+            celdaSegura(doc.razonSocial),
+            celdaSegura(doc.tipoDoc),
+            celdaSegura(doc.serie),
             doc.claveAcceso || '',
             doc.fechaEmision || '',
             doc.fechaAutorizacion || '',
             doc.exito ? 'OK' : 'FALLIDO',
-            `"${(doc.error || '').replace(/"/g, '""')}"`,
+            celdaSegura(doc.error),
             doc.fechaDescarga || ''
           ];
           filas.push(fila.join(','));
@@ -1002,19 +1084,36 @@ function cargarConfigUI() {
 }
 
 /**
+ * Lee un input numerico de configuracion. Si esta vacio o no es un numero
+ * usa el valor por defecto (parseInt('') es NaN y guardarlo rompia los
+ * reintentos), y aplica los limites min/max declarados en el propio input.
+ * @param {string} id - ID del input
+ * @param {number} defecto - Valor por defecto si el input no es valido
+ * @returns {number} Valor validado y acotado
+ */
+function leerConfigNum(id, defecto) {
+  const input = document.getElementById(id);
+  const valor = parseInt(input.value, 10);
+  if (Number.isNaN(valor)) return defecto;
+  const min = parseInt(input.min, 10);
+  const max = parseInt(input.max, 10);
+  return Math.min(max, Math.max(min, valor));
+}
+
+/**
  * Lee los valores de configuracion desde los inputs del UI y los guarda
  * en el storage a traves del background service worker.
  * Muestra mensaje de exito o error al finalizar.
  */
 function guardarConfig() {
   const config = {
-    DELAY_DESCARGA: parseInt(document.getElementById('cfgDelayDescarga').value) || CONFIG_DEFAULTS.DELAY_DESCARGA,
-    TIMEOUT_DESCARGA: parseInt(document.getElementById('cfgTimeoutDescarga').value) || CONFIG_DEFAULTS.TIMEOUT_DESCARGA,
-    DELAY_PAGINA: parseInt(document.getElementById('cfgDelayPagina').value) || CONFIG_DEFAULTS.DELAY_PAGINA,
-    TIMEOUT_PAGINA: parseInt(document.getElementById('cfgTimeoutPagina').value) || CONFIG_DEFAULTS.TIMEOUT_PAGINA,
-    DELAY_REINTENTO: parseInt(document.getElementById('cfgDelayReintento').value) || CONFIG_DEFAULTS.DELAY_REINTENTO,
-    MAX_REINTENTOS: parseInt(document.getElementById('cfgMaxReintentos').value) ?? CONFIG_DEFAULTS.MAX_REINTENTOS,
-    DIAS_HISTORIAL: parseInt(document.getElementById('cfgDiasHistorial').value) || CONFIG_DEFAULTS.DIAS_HISTORIAL,
+    DELAY_DESCARGA: leerConfigNum('cfgDelayDescarga', CONFIG_DEFAULTS.DELAY_DESCARGA),
+    TIMEOUT_DESCARGA: leerConfigNum('cfgTimeoutDescarga', CONFIG_DEFAULTS.TIMEOUT_DESCARGA),
+    DELAY_PAGINA: leerConfigNum('cfgDelayPagina', CONFIG_DEFAULTS.DELAY_PAGINA),
+    TIMEOUT_PAGINA: leerConfigNum('cfgTimeoutPagina', CONFIG_DEFAULTS.TIMEOUT_PAGINA),
+    DELAY_REINTENTO: leerConfigNum('cfgDelayReintento', CONFIG_DEFAULTS.DELAY_REINTENTO),
+    MAX_REINTENTOS: leerConfigNum('cfgMaxReintentos', CONFIG_DEFAULTS.MAX_REINTENTOS),
+    DIAS_HISTORIAL: leerConfigNum('cfgDiasHistorial', CONFIG_DEFAULTS.DIAS_HISTORIAL),
     METODO_DESCARGA: document.querySelector('input[name="metodoDescarga"]:checked')?.value || 'mojarra'
   };
 

@@ -7,9 +7,10 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 ### Descarga
 - **Descarga masiva**: Descarga todos los documentos de todas las paginas con un solo clic
 - **Tipos de archivo**: XML, PDF o ambos (recuerda tu ultima seleccion)
-- **Seleccion individual**: Checkboxes para elegir documentos especificos
+- **Seleccion individual**: Checkboxes para descargar solo documentos especificos de la pagina actual
 - **Navegacion automatica**: Recorre todas las paginas de resultados
 - **Descarga persistente**: Continua descargando aunque cierres el popup
+- **Guardado incremental**: El historial se guarda pagina a pagina; no se pierde si Chrome recicla el service worker
 - **Doble metodo**: Mojarra (JSF directo, mas rapido) o click emulado (mas compatible)
 - **Reintentos automaticos**: Reintenta descargas fallidas (configurable, default 2)
 - **Verificacion real**: Confirma que cada archivo se descargo via chrome.downloads API
@@ -73,6 +74,7 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 6. Opciones:
    - **Descargar TODO**: Descarga todos los documentos de todas las paginas
    - **Descargar ignorando historial**: Re-descarga todo sin verificar duplicados
+   - **Descargar seleccionados (esta pagina)**: Solo los documentos marcados en la lista desplegable
 7. Puedes cerrar el popup; la descarga continua en segundo plano
 8. Configura la **organizacion de archivos** para ordenar descargas en carpetas
 9. Revisa el historial en la pestana "Historial"

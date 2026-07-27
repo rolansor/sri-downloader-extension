@@ -38,6 +38,7 @@ function obtenerFilasTabla() {
         nro: celdas[0]?.textContent?.trim() || '',        // Numero de fila
         ruc: celdas[1]?.textContent?.trim().split('\n')[0] || '',  // RUC del emisor
         tipoYSerie: celdas[2]?.textContent?.trim() || '', // Tipo + serie (ej: "Factura 001-001-000123")
+        claveAcceso: celdas[3]?.textContent?.trim() || '', // Clave de acceso (identificador unico)
         fecha: celdas[5]?.textContent?.trim() || '',       // Fecha de emision
         tieneXml: !!linkXml,     // Si tiene link de descarga XML
         tienePdf: !!linkPdf,     // Si tiene link de descarga PDF

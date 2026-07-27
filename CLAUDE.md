@@ -3,7 +3,7 @@
 ## Proyecto
 Extension de Chrome (Manifest V3) para descargar documentos XML/PDF del SRI Ecuador.
 Organiza archivos en carpetas configurables y ofrece accesos directos al portal SRI.
-Version: 1.3.0 | Dominio: `srienlinea.sri.gob.ec`
+Version: 1.4.0 | Dominio: `srienlinea.sri.gob.ec`
 
 ## Estructura de archivos
 ```
@@ -99,6 +99,7 @@ sri-downloader-extension/
 | Mensaje | Descripcion | Payload |
 |---------|-------------|---------|
 | `iniciarDescargaTotal` | Inicia descarga de todas las paginas | `{tabId, tipoDescarga, ignorarHistorial}` |
+| `iniciarDescargaSeleccionados` | Descarga seleccionados de la pagina actual (sin dedup) | `{tabId, tipoDescarga, claves[]}` |
 | `detenerDescarga` | Detiene descarga en progreso | - |
 | `obtenerEstado` | Obtiene estado actual | - |
 | `obtenerHistorial` | Obtiene historial completo | `{ruc?}` |
@@ -244,7 +245,20 @@ document.getElementById(linkId).click();
 - **Solucion**: `chrome.downloads.acceptDanger` automatico para URLs del SRI
 
 ### Deduplicacion no distinguia XML de PDF
-- **Solucion**: `exitoXml` y `exitoPdf` se inicializan en `false`, solo se marcan `true` si realmente se descargo ese tipo
+- **Solucion**: `exitoXml`/`exitoPdf` usan `null` = no se intento ese formato,
+  `true`/`false` = resultado real. El indice de dedup exige `=== true` y que
+  la sesion haya cubierto ese formato (`tipoDescarga` de la sesion), lo que
+  tambien neutraliza registros viejos que guardaban `true` por defecto
+
+### Campo de config vacio generaba NaN y rompia los reintentos
+- **Solucion**: `leerConfigNum` en popup.js (Number.isNaN → default, clamp min/max)
+
+### Service worker MV3 puede morir a mitad de descarga larga
+- **Solucion**: guardado incremental del buffer por pagina (`guardarBufferAlStorage(false)`)
+
+### Descargas ajenas del usuario contaban como exito
+- **Solucion**: `downloads.onCreated` filtra por origen ademas de la ventana
+  de tiempo (dominio SRI, `blob:` o URL vacia; rechaza otros sitios)
 
 ### tipoDoc incluia la serie en la ruta
 - **Solucion**: `limpiarTipoDoc()` extrae solo el tipo sin la serie usando regex

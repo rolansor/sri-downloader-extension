@@ -27,34 +27,40 @@ let estadoDescarga = {
   error: null
 };
 
-// Sistema de deteccion de descargas basado en timing
+// Sistema de deteccion de descargas basado en timing + filtro laxo de origen.
 // Cuando hacemos click en un link del SRI, esperamos que onCreated se dispare
-// dentro del timeout. No filtramos por URL para evitar falsos negativos.
+// dentro del timeout. El filtro acepta dominio SRI, blob: o URL vacia (JSF
+// puede no exponer la URL), pero rechaza descargas de otros sitios para no
+// marcar como exito una descarga ajena que el usuario inicie en paralelo.
 let pendingDownload = { resolver: null, timestamp: null, docMetadata: null, tipoArchivo: null };
 
 // Map de metadata por downloadId para onDeterminingFilename
 let downloadMetadataMap = new Map();
 
 chrome.downloads.onCreated.addListener((downloadItem) => {
-  // Solo aceptar si hay un resolver pendiente y fue dentro de la ventana de tiempo
-  if (pendingDownload.resolver && pendingDownload.timestamp) {
-    const elapsed = Date.now() - pendingDownload.timestamp;
-    // Solo aceptar descargas que ocurran dentro de la ventana activa
-    if (elapsed < SRI_CONFIG.TIMEOUT_DESCARGA) {
-      // Guardar metadata para onDeterminingFilename antes de limpiar
-      if (pendingDownload.docMetadata) {
-        downloadMetadataMap.set(downloadItem.id, {
-          docMetadata: { ...pendingDownload.docMetadata, rucUsuario: estadoDescarga.rucUsuario },
-          tipoArchivo: pendingDownload.tipoArchivo
-        });
-      }
-      pendingDownload.resolver({ success: true, downloadId: downloadItem.id });
-      pendingDownload.resolver = null;
-      pendingDownload.timestamp = null;
-      pendingDownload.docMetadata = null;
-      pendingDownload.tipoArchivo = null;
-    }
+  if (!pendingDownload.resolver || !pendingDownload.timestamp) return;
+
+  const elapsed = Date.now() - pendingDownload.timestamp;
+  if (elapsed >= SRI_CONFIG.TIMEOUT_DESCARGA) return;
+
+  const url = downloadItem.url || '';
+  const finalUrl = downloadItem.finalUrl || '';
+  const esDelSri = url === '' || url.startsWith('blob:') ||
+    url.includes(SRI_CONFIG.DOMINIO_SRI) || finalUrl.includes(SRI_CONFIG.DOMINIO_SRI);
+  if (!esDelSri) return;
+
+  // Guardar metadata para onDeterminingFilename antes de limpiar
+  if (pendingDownload.docMetadata) {
+    downloadMetadataMap.set(downloadItem.id, {
+      docMetadata: { ...pendingDownload.docMetadata, rucUsuario: estadoDescarga.rucUsuario },
+      tipoArchivo: pendingDownload.tipoArchivo
+    });
   }
+  pendingDownload.resolver({ success: true, downloadId: downloadItem.id });
+  pendingDownload.resolver = null;
+  pendingDownload.timestamp = null;
+  pendingDownload.docMetadata = null;
+  pendingDownload.tipoArchivo = null;
 });
 
 // Interceptar descargas para organizar en carpetas
@@ -94,7 +100,7 @@ chrome.downloads.onChanged.addListener((delta) => {
     chrome.downloads.search({ id: delta.id }, (items) => {
       if (items.length > 0) {
         const url = items[0].url || '';
-        if (url.includes(SRI_CONFIG.DOMINIO_SRI) || estadoDescarga.activo) {
+        if (url.includes(SRI_CONFIG.DOMINIO_SRI)) {
           try {
             if (chrome.downloads.acceptDanger) {
               chrome.downloads.acceptDanger(delta.id);
@@ -144,11 +150,18 @@ async function construirIndiceDescargados(tipoDescarga) {
 
   for (const ruc in historial) {
     for (const sid in historial[ruc].sesiones) {
-      for (const doc of historial[ruc].sesiones[sid].documentos) {
+      const sesion = historial[ruc].sesiones[sid];
+      // Un flag exitoXml/exitoPdf solo es confiable si esa sesion realmente
+      // intento ese formato (registros de versiones viejas guardaban true por defecto)
+      const cubreXml = sesion.tipoDescarga === 'xml' || sesion.tipoDescarga === 'ambos';
+      const cubrePdf = sesion.tipoDescarga === 'pdf' || sesion.tipoDescarga === 'ambos';
+      for (const doc of sesion.documentos) {
         if (!doc.exito) continue;
-        if (tipoDescarga === 'xml' && doc.exitoXml) indice.add(doc.claveAcceso);
-        else if (tipoDescarga === 'pdf' && doc.exitoPdf) indice.add(doc.claveAcceso);
-        else if (tipoDescarga === 'ambos' && doc.exitoXml && doc.exitoPdf) indice.add(doc.claveAcceso);
+        const xmlOk = cubreXml && doc.exitoXml === true;
+        const pdfOk = cubrePdf && doc.exitoPdf === true;
+        if (tipoDescarga === 'xml' && xmlOk) indice.add(doc.claveAcceso);
+        else if (tipoDescarga === 'pdf' && pdfOk) indice.add(doc.claveAcceso);
+        else if (tipoDescarga === 'ambos' && xmlOk && pdfOk) indice.add(doc.claveAcceso);
       }
     }
   }
@@ -164,9 +177,11 @@ function agregarAlBuffer(registro) {
 }
 
 /**
- * Guarda todo el buffer al storage al finalizar la descarga
+ * Guarda el buffer al storage. Se llama incrementalmente (por pagina) para no
+ * perder el registro si Chrome termina el service worker MV3 a mitad de una
+ * descarga larga, y al finalizar con esFinal=true para limpiar el buffer.
  */
-async function guardarBufferAlStorage() {
+async function guardarBufferAlStorage(esFinal = true) {
   if (bufferSesion.documentos.length === 0) return;
 
   try {
@@ -200,8 +215,9 @@ async function guardarBufferAlStorage() {
 
     await chrome.storage.local.set({ historialDescargas: historial });
 
-    // Limpiar buffer
-    bufferSesion = { documentos: [], rucUsuario: null };
+    if (esFinal) {
+      bufferSesion = { documentos: [], rucUsuario: null };
+    }
 
   } catch (e) {
     // Error guardando historial
@@ -679,14 +695,103 @@ function notificarFinalizacion() {
 }
 
 /**
+ * Procesa un documento: dedup, descarga XML/PDF segun tipo, registra en buffer.
+ * exitoXml/exitoPdf usan null = no se intento ese formato (no solicitado o sin
+ * link), true/false = resultado real. Asi la deduplicacion no confunde
+ * "no intentado" con "descargado" ni "fallido".
+ */
+async function procesarDocumento(tabId, doc, tipoDescarga, pagina) {
+  estadoDescarga.documentoActual++;
+
+  // Verificar si ya fue descargado (O(1) con Set)
+  if (indiceDescargados.has(doc.claveAcceso)) {
+    estadoDescarga.omitidos++;
+    estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
+    actualizarBadge();
+    notificarProgreso();
+    return;
+  }
+
+  const intentaXml = (tipoDescarga === 'xml' || tipoDescarga === 'ambos') && doc.tieneXml;
+  const intentaPdf = (tipoDescarga === 'pdf' || tipoDescarga === 'ambos') && doc.tienePdf;
+
+  let exitoXml = null;
+  let exitoPdf = null;
+  let errorMsg = null;
+
+  try {
+    // Metadata del documento para organizar archivos
+    const docMeta = {
+      claveAcceso: doc.claveAcceso,
+      ruc: doc.ruc,
+      razonSocial: doc.razonSocial,
+      tipoDoc: doc.tipoDoc,
+      serie: doc.serie,
+      fechaEmision: doc.fechaEmision,
+      rucUsuario: estadoDescarga.rucUsuario
+    };
+
+    // Descargar XML con reintentos
+    if (intentaXml) {
+      exitoXml = await ejecutarConReintento(tabId, doc.linkXmlId, docMeta, 'xml');
+      if (!exitoXml) errorMsg = 'Error descargando XML';
+      await delay(SRI_CONFIG.DELAY_DESCARGA);
+    }
+
+    // Descargar PDF con reintentos
+    if (intentaPdf) {
+      exitoPdf = await ejecutarConReintento(tabId, doc.linkPdfId, docMeta, 'pdf');
+      if (!exitoPdf) errorMsg = errorMsg ? 'Error descargando XML y PDF' : 'Error descargando PDF';
+      await delay(SRI_CONFIG.DELAY_DESCARGA);
+    }
+
+  } catch (e) {
+    if (intentaXml && exitoXml !== true) exitoXml = false;
+    if (intentaPdf && exitoPdf !== true) exitoPdf = false;
+    errorMsg = e.message;
+  }
+
+  // Exito si nada de lo intentado fallo
+  const exito = exitoXml !== false && exitoPdf !== false;
+
+  if (exito) {
+    estadoDescarga.exitosos++;
+    indiceDescargados.add(doc.claveAcceso);
+  } else {
+    estadoDescarga.fallidos++;
+  }
+
+  agregarAlBuffer({
+    claveAcceso: doc.claveAcceso,
+    ruc: doc.ruc,
+    razonSocial: doc.razonSocial,
+    tipoDoc: doc.tipoDoc,
+    serie: doc.serie,
+    fechaEmision: doc.fechaEmision,
+    fechaAutorizacion: doc.fechaAutorizacion,
+    pagina: pagina,
+    exito: exito,
+    exitoXml: exitoXml,
+    exitoPdf: exitoPdf,
+    error: errorMsg,
+    fechaDescarga: new Date().toISOString()
+  });
+
+  estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
+  actualizarBadge();
+  notificarProgreso();
+}
+
+/**
  * Proceso principal de descarga de todas las paginas
  */
 async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = false) {
   // Cargar configuracion del usuario
   await cargarConfigUsuario();
 
-  // Limpiar historial antiguo al iniciar
-  limpiarHistorialAntiguo();
+  // Limpiar historial antiguo al iniciar (await para evitar carrera de
+  // escritura con el guardado incremental del buffer)
+  await limpiarHistorialAntiguo();
 
   const sesionId = generarSesionId();
 
@@ -757,91 +862,19 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
     datos = await obtenerDatosPagina(tabId);
     if (datos.error) break;
 
+    // Ajustar el total real al llegar a la ultima pagina (puede estar incompleta)
+    if (pag === estadoDescarga.totalPaginas) {
+      estadoDescarga.totalDocumentos = (pag - 1) * docsPorPagina + datos.documentos.length;
+    }
+
     // Descargar documentos de esta pagina
     for (const doc of datos.documentos) {
       if (estadoDescarga.detenido) break;
-
-      estadoDescarga.documentoActual++;
-
-      // Verificar si ya fue descargado (O(1) con Set)
-      if (indiceDescargados.has(doc.claveAcceso)) {
-        estadoDescarga.omitidos++;
-        estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
-        actualizarBadge();
-        notificarProgreso();
-        continue;
-      }
-
-      // Solo marcar exito si realmente se descargo ese tipo
-      let exitoXml = false;
-      let exitoPdf = false;
-      let errorMsg = null;
-
-      try {
-        // Metadata del documento para organizar archivos
-        const docMeta = {
-          claveAcceso: doc.claveAcceso,
-          ruc: doc.ruc,
-          razonSocial: doc.razonSocial,
-          tipoDoc: doc.tipoDoc,
-          serie: doc.serie,
-          fechaEmision: doc.fechaEmision,
-          rucUsuario: estadoDescarga.rucUsuario
-        };
-
-        // Descargar XML con reintentos
-        if ((tipoDescarga === 'xml' || tipoDescarga === 'ambos') && doc.tieneXml) {
-          exitoXml = await ejecutarConReintento(tabId, doc.linkXmlId, docMeta, 'xml');
-          if (!exitoXml) errorMsg = 'Error descargando XML';
-          await delay(SRI_CONFIG.DELAY_DESCARGA);
-        }
-
-        // Descargar PDF con reintentos
-        if ((tipoDescarga === 'pdf' || tipoDescarga === 'ambos') && doc.tienePdf) {
-          exitoPdf = await ejecutarConReintento(tabId, doc.linkPdfId, docMeta, 'pdf');
-          if (!exitoPdf) errorMsg = errorMsg ? 'Error descargando XML y PDF' : 'Error descargando PDF';
-          await delay(SRI_CONFIG.DELAY_DESCARGA);
-        }
-
-      } catch (e) {
-        exitoXml = false;
-        exitoPdf = false;
-        errorMsg = e.message;
-      }
-
-      // Determinar exito segun lo que se intento descargar
-      let exito;
-      if (tipoDescarga === 'xml') exito = exitoXml;
-      else if (tipoDescarga === 'pdf') exito = exitoPdf;
-      else exito = exitoXml && exitoPdf;
-
-      if (exito) {
-        estadoDescarga.exitosos++;
-        indiceDescargados.add(doc.claveAcceso);
-      } else {
-        estadoDescarga.fallidos++;
-      }
-
-      agregarAlBuffer({
-        claveAcceso: doc.claveAcceso,
-        ruc: doc.ruc,
-        razonSocial: doc.razonSocial,
-        tipoDoc: doc.tipoDoc,
-        serie: doc.serie,
-        fechaEmision: doc.fechaEmision,
-        fechaAutorizacion: doc.fechaAutorizacion,
-        pagina: pag,
-        exito: exito,
-        exitoXml: exitoXml,
-        exitoPdf: exitoPdf,
-        error: errorMsg,
-        fechaDescarga: new Date().toISOString()
-      });
-
-      estadoDescarga.tiempoEstimado = calcularTiempoEstimado();
-      actualizarBadge();
-      notificarProgreso();
+      await procesarDocumento(tabId, doc, tipoDescarga, pag);
     }
+
+    // Guardar progreso parcial (protege contra terminacion del service worker)
+    await guardarBufferAlStorage(false);
 
     // Ir a siguiente pagina si hay mas
     if (pag < estadoDescarga.totalPaginas && !estadoDescarga.detenido) {
@@ -854,9 +887,78 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
   }
 
   // Guardar buffer al storage
-  await guardarBufferAlStorage();
+  await guardarBufferAlStorage(true);
 
   // Limpiar metadata map
+  downloadMetadataMap.clear();
+
+  estadoDescarga.activo = false;
+  estadoDescarga.tiempoEstimado = null;
+
+  actualizarBadge();
+  notificarProgreso();
+  notificarFinalizacion();
+}
+
+/**
+ * Descarga solo los documentos seleccionados (por clave de acceso) de la
+ * pagina actual. La seleccion es explicita del usuario, asi que no se
+ * aplica deduplicacion contra el historial.
+ */
+async function descargarSeleccionados(tabId, tipoDescarga, claves) {
+  await cargarConfigUsuario();
+  await limpiarHistorialAntiguo();
+
+  const sesionId = generarSesionId();
+  bufferSesion = { documentos: [], rucUsuario: null };
+  indiceDescargados = new Set();
+
+  estadoDescarga = {
+    activo: true,
+    detenido: false,
+    exitosos: 0,
+    fallidos: 0,
+    omitidos: 0,
+    paginaActual: 1,
+    totalPaginas: 1,
+    documentoActual: 0,
+    totalDocumentos: 0,
+    tipoDescarga: tipoDescarga,
+    tabId: tabId,
+    sesionId: sesionId,
+    rucUsuario: null,
+    timestampInicio: Date.now(),
+    tiempoEstimado: null,
+    error: null
+  };
+
+  actualizarBadge();
+  notificarProgreso();
+
+  const datos = await obtenerDatosPagina(tabId);
+  if (datos.error) {
+    estadoDescarga.activo = false;
+    estadoDescarga.error = datos.error;
+    actualizarBadge();
+    notificarProgreso();
+    return;
+  }
+
+  estadoDescarga.rucUsuario = datos.rucUsuario;
+  bufferSesion.rucUsuario = datos.rucUsuario;
+  estadoDescarga.paginaActual = datos.paginacion?.actual || 1;
+  estadoDescarga.totalPaginas = estadoDescarga.paginaActual;
+
+  const setClaves = new Set(claves);
+  const docs = datos.documentos.filter(d => setClaves.has(d.claveAcceso));
+  estadoDescarga.totalDocumentos = docs.length;
+
+  for (const doc of docs) {
+    if (estadoDescarga.detenido) break;
+    await procesarDocumento(tabId, doc, tipoDescarga, estadoDescarga.paginaActual);
+  }
+
+  await guardarBufferAlStorage(true);
   downloadMetadataMap.clear();
 
   estadoDescarga.activo = false;
@@ -871,7 +973,21 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'iniciarDescargaTotal') {
+    if (estadoDescarga.activo) {
+      sendResponse({ status: 'ocupado' });
+      return false;
+    }
     descargarTodasLasPaginas(request.tabId, request.tipoDescarga, request.ignorarHistorial || false);
+    sendResponse({ status: 'iniciado' });
+    return false;
+  }
+
+  if (request.action === 'iniciarDescargaSeleccionados') {
+    if (estadoDescarga.activo) {
+      sendResponse({ status: 'ocupado' });
+      return false;
+    }
+    descargarSeleccionados(request.tabId, request.tipoDescarga, request.claves || []);
     sendResponse({ status: 'iniciado' });
     return false;
   }
@@ -987,19 +1103,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     sendResponse({ status: 'navegando' });
     return false;
-  }
-
-  if (request.action === 'ejecutarDescarga') {
-    const tabId = sender.tab?.id;
-    if (!tabId) {
-      sendResponse({ success: false, error: 'No tab ID' });
-      return false;
-    }
-
-    ejecutarConReintento(tabId, request.linkId)
-      .then(success => sendResponse({ success }))
-      .catch(e => sendResponse({ success: false, error: e.message }));
-    return true;
   }
 
   return false;
