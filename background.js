@@ -1383,6 +1383,49 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Navegar a la pantalla de comprobantes emitidos: la URL de "Consultas
+  // (produccion)" cae en menu.jsf con un menu de seleccion; al cargar se
+  // hace click en la opcion "Comprobantes electronicos emitidos"
+  if (request.action === 'navegarAEmitidos') {
+    const tabId = request.tabId;
+    chrome.tabs.update(tabId, { url: request.url });
+
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        // Reintentar varias veces porque la pagina SRI carga contenido con AJAX
+        let intentos = 0;
+        const intervalo = setInterval(() => {
+          intentos++;
+          chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+              // Ya estamos en la pantalla de emitidos
+              if (document.getElementById('frmPrincipal:calendarFechaDesde_input')) return true;
+              // Menu intermedio: click en la opcion de emitidos
+              const link = Array.from(document.querySelectorAll('#consultaDocumentoForm a'))
+                .find(a => /emitidos/i.test(a.textContent));
+              if (link) {
+                link.click();
+                return true;
+              }
+              return false;
+            }
+          }).then(result => {
+            if (result?.[0]?.result || intentos >= 10) {
+              clearInterval(intervalo);
+            }
+          }).catch(() => clearInterval(intervalo));
+        }, 1000);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+
+    sendResponse({ status: 'navegando' });
+    return false;
+  }
+
   // Navegar a comprobantes recibidos y setear dia = "Todos" + tipo de comprobante
   if (request.action === 'navegarYSetearDia') {
     const tabId = request.tabId;

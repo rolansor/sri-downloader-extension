@@ -1330,7 +1330,9 @@ async function restaurarTipoDescarga() {
  * @type {Array<{nombre: string, url?: string, primary?: boolean, items?: Array<{nombre: string, url: string}>}>}
  */
 const SRI_MENU = [
-  { nombre: 'Descargar comprobantes', primary: true, items: [
+  { nombre: 'Descargar emitidos', primary: true, esEmitidos: true,
+    url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58' },
+  { nombre: 'Descargar recibidos', primary: true, items: [
     { nombre: 'Facturas', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '1' },
     { nombre: 'Liquidaciones de compra', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '2' },
     { nombre: 'Notas de Credito', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '3' },
@@ -1419,19 +1421,20 @@ function renderSriMenu() {
   const container = document.getElementById('sriMenuContainer');
   container.innerHTML = '';
 
-  // Renderizar boton primario destacado (Descargar comprobantes)
-  const primary = SRI_MENU.find(m => m.primary);
-  if (primary) {
+  // Renderizar botones primarios destacados (Descargar recibidos / emitidos)
+  SRI_MENU.filter(m => m.primary).forEach(primary => {
     const btn = document.createElement('a');
     btn.className = 'sri-link sri-link-primary';
     btn.textContent = primary.nombre;
     if (primary.items) {
       btn.addEventListener('click', () => renderSriSubmenu(primary));
+    } else if (primary.esEmitidos) {
+      btn.addEventListener('click', () => navegarSRIEmitidos(primary.url));
     } else {
       btn.addEventListener('click', () => navegarSRI(primary.url));
     }
     container.appendChild(btn);
-  }
+  });
 
   // Renderizar grilla de categorias
   const grid = document.createElement('div');
@@ -1496,6 +1499,18 @@ function renderSriSubmenu(category) {
   });
 
   container.appendChild(grid);
+}
+
+/**
+ * Navega a la pantalla de comprobantes emitidos. La URL de "Consultas
+ * (produccion)" cae en un menu intermedio (menu.jsf); el background espera
+ * la carga y hace click en la opcion "Comprobantes electronicos emitidos".
+ * @param {string} url - URL de accederAplicacion.jspa (redireccion=60)
+ */
+async function navegarSRIEmitidos(url) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  chrome.runtime.sendMessage({ action: 'navegarAEmitidos', tabId: tab.id, url });
+  window.close();
 }
 
 /**

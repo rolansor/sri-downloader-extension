@@ -98,8 +98,10 @@ sri-downloader-extension/
 ### Popup -> Background
 | Mensaje | Descripcion | Payload |
 |---------|-------------|---------|
-| `iniciarDescargaTotal` | Inicia descarga de todas las paginas | `{tabId, tipoDescarga, ignorarHistorial}` |
-| `iniciarDescargaSeleccionados` | Descarga seleccionados de la pagina actual (sin dedup) | `{tabId, tipoDescarga, claves[]}` |
+| `iniciarDescargaTotal` | Inicia descarga de todas las paginas | `{tabId, tipoDescarga, ignorarHistorial, origen}` |
+| `iniciarDescargaSeleccionados` | Descarga seleccionados de la pagina actual (sin dedup) | `{tabId, tipoDescarga, claves[], origen}` |
+| `iniciarDescargaEmitidosMes` | Descarga emitidos de un mes, consultando dia por dia | `{tabId, tipoDescarga, ignorarHistorial, anio, mes}` |
+| `navegarAEmitidos` | Navega al menu de consultas y hace click en emitidos | `{tabId, url}` |
 | `detenerDescarga` | Detiene descarga en progreso | - |
 | `obtenerEstado` | Obtiene estado actual | - |
 | `obtenerHistorial` | Obtiene historial completo | `{ruc?}` |
