@@ -1,9 +1,10 @@
 # CLAUDE.md - Guia para Claude Code
 
 ## Proyecto
-Extension de Chrome (Manifest V3) para descargar documentos XML/PDF del SRI Ecuador.
-Organiza archivos en carpetas configurables y ofrece accesos directos al portal SRI.
-Version: 1.4.0 | Dominio: `srienlinea.sri.gob.ec`
+Extension de Chrome (Manifest V3) para descargar documentos XML/PDF del SRI Ecuador,
+tanto comprobantes RECIBIDOS como EMITIDOS. Organiza archivos en carpetas
+configurables y ofrece accesos directos al portal SRI.
+Version: 1.5.0 | Dominio: `srienlinea.sri.gob.ec` (+ WS `cel.sri.gob.ec`)
 
 ## Estructura de archivos
 ```
@@ -65,7 +66,35 @@ sri-downloader-extension/
 - Mensaje `navegarYSetearDia`: navega a comprobantes recibidos y setea automaticamente:
   - Dia del periodo = "Todos" (`frmPrincipal:dia` value `0`)
   - Tipo de comprobante segun seleccion (`frmPrincipal:cmbTipoComprobante`)
+- Mensaje `navegarAEmitidos`: navega via `accederAplicacion.jspa?redireccion=60&idGrupo=58`
+  (handshake SSO; la URL directa al .jsf rebota al login Keycloak), hace click en
+  "Comprobantes electronicos emitidos" del menu intermedio (`consultaDocumentoForm`),
+  preselecciona el tipo de comprobante y consulta automaticamente con el dia 1 del
+  mes (la fecha por defecto del form es HOY y el SRI la rechaza)
 - Usa `chrome.tabs.onUpdated` + reintentos cada 1s (hasta 10) para esperar carga JSF
+
+### Comprobantes emitidos (background.js)
+- Pantalla: `recuperarComprobantes.jsf`, tabla `frmPrincipal:tablaCompEmitidos_data`
+- Por fila SOLO hay link de PDF/RIDE (`lnkPdf`, mojarra.jsfcljs). NO existe `lnkXml`
+- **XML via web service**: `consultarXmlAutorizado` hace SOAP al WS publico
+  `AutorizacionComprobantesOffline` (cel/celcer.sri.gob.ec) con la clave de acceso;
+  el XML viene escapado con entidades dentro de `<comprobante>` → `desescaparXml`
+  → `xmlADataUrl` (base64, el SW no tiene URL.createObjectURL) → `chrome.downloads.download`
+- El formulario consulta UN SOLO DIA (sin rango ni "Todos"):
+  - Modo dia: descarga lo consultado en pantalla (flujo normal de paginas)
+  - Modo mes (`descargarEmitidosMes`): itera del dia 1 hasta UN DIA ANTES de hoy
+    (consultar el dia actual da error), seteando fecha + click Consultar
+    (`frmPrincipal:btnConsultar`) por cada dia
+- Deteccion de fin de AJAX: se marca la tabla y `.ui-messages` con atributo
+  `data-sri-esperando` antes del click; el poll (`esperarResultadosEmitidos`)
+  devuelve 'datos' | 'vacio' ("No existen datos...") | 'timeout'
+- Dias sin comprobantes se SALTAN (solo si el mensaje "No existen datos" esta
+  presente; otros errores abortan para no enmascararlos)
+- Cancelacion: `estadoDescarga.detenido` se consulta en todos los bucles de espera
+- `procesarPaginasActuales`: bucle de paginas reutilizable (acumula totales) usado
+  por descarga total, seleccionados y modo mes; `procesarDocumento` recibe `origen`
+- Ruta de organizacion usa segmento `recibidos|emitidos` segun `metadata.origen`
+- Popup con tema verde agua (`body.modo-emitidos`) cuando trabaja sobre emitidos
 
 ### Popup - `popup.html` / `popup.js` / `popup.css`
 - **4 tabs** en grilla 2x2: Descargar | Historial | Configuracion | Organizacion

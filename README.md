@@ -1,8 +1,20 @@
 # Descargador de Comprobantes SRI - Extension Chrome/Edge
 
-Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea.sri.gob.ec).
+Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea.sri.gob.ec),
+tanto comprobantes **recibidos** como **emitidos**.
 
 ## Caracteristicas
+
+### Comprobantes emitidos
+- **PDF + XML**: El RIDE se descarga de la pagina; el XML (que el SRI no ofrece como link)
+  se obtiene del web service publico de autorizacion usando la clave de acceso
+- **Descarga por dia o mes completo**: El formulario del SRI consulta un solo dia;
+  en modo mes la extension itera dia por dia automaticamente (hasta un dia antes
+  del actual), saltando los dias sin comprobantes
+- **Consulta automatica**: Al navegar a emitidos desde el menu, consulta sola
+  (no hay captcha); no hace falta ejecutar la consulta manualmente
+- **Tema verde agua**: Todo el popup cambia de color al trabajar sobre emitidos
+  para distinguir el entorno (azul = recibidos)
 
 ### Descarga
 - **Descarga masiva**: Descarga todos los documentos de todas las paginas con un solo clic
@@ -19,19 +31,22 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 
 ### Accesos directos SRI
 - **Menu de navegacion rapida**: Accesos directos a las secciones principales del portal SRI
-- **Descarga por tipo de comprobante**: Navega directamente a Facturas, Liquidaciones, Notas de Credito/Debito o Retenciones
-- **Pre-configuracion automatica**: Al navegar a comprobantes, setea dia="Todos" y tipo de comprobante automaticamente
+- **Descargar recibidos / Descargar emitidos**: Dos botones principales, cada uno con
+  submenu por tipo de comprobante (Facturas, Liquidaciones, Notas de Credito/Debito,
+  Guias de Remision en emitidos, Retenciones)
+- **Pre-configuracion automatica**: Al navegar, setea dia="Todos" (recibidos) o consulta
+  el dia 1 del mes (emitidos) y el tipo de comprobante automaticamente
 - **13 categorias**: Claves, RUC, Facturacion Electronica, Declaraciones, Anexos, Pagos, Deudas, Devoluciones, Certificados, Vehiculos, Tramites y mas
 
 ### Organizacion de archivos
 - **Carpetas automaticas**: Organiza descargas en estructura de carpetas configurable
 - **Orden configurable**: RUC/Anio/Mes o Anio/Mes/RUC
 - **3 formatos de nombre**: Clave de acceso, RUC+Serie, o Razon social+Serie
-- **Estructura fija**: carpetaRaiz / [orden] / recibidos / tipoDocumento / xml|pdf / archivo
+- **Estructura fija**: carpetaRaiz / [orden] / recibidos|emitidos / tipoDocumento / xml|pdf / archivo
 - **Vista previa en tiempo real**: Muestra la ruta resultante antes de guardar
 
 ### Historial
-- **Registro persistente**: Organizado por RUC y sesion
+- **Registro persistente**: Organizado por RUC y sesion, con origen (emitido/recibido)
 - **Filtros**: Todo, exitosos o fallidos
 - **Exportar a CSV**: Exporta el registro completo
 - **Reintentar fallidos**: Re-descarga solo los documentos que fallaron
@@ -68,17 +83,20 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 
 1. Inicia sesion en el portal SRI: https://srienlinea.sri.gob.ec
 2. Haz clic en el icono de la extension
-3. Usa los **accesos directos SRI** para navegar rapidamente a comprobantes recibidos
-4. O navega manualmente a Comprobantes Electronicos y realiza una consulta
-5. Selecciona el tipo de descarga (XML, PDF o Ambos)
+3. Usa **Descargar recibidos** o **Descargar emitidos** y elige el tipo de comprobante;
+   la extension navega y deja la consulta lista
+4. Selecciona el tipo de descarga (XML, PDF o Ambos)
+5. En emitidos elige el rango: **Mes completo** (por defecto, itera dia por dia el mes
+   de la fecha elegida en el selector) o **Dia consultado**
 6. Opciones:
-   - **Descargar TODO**: Descarga todos los documentos de todas las paginas
+   - **Descargar TODO**: Descarga todo lo consultado (o todo el mes en emitidos)
    - **Descargar ignorando historial**: Re-descarga todo sin verificar duplicados
    - **Descargar seleccionados (esta pagina)**: Solo los documentos marcados en la lista desplegable
-7. Puedes cerrar el popup; la descarga continua en segundo plano
+7. Puedes cerrar el popup; la descarga continua en segundo plano (el boton
+   "Detener Descarga" cancela en cualquier momento)
 8. Configura la **organizacion de archivos** para ordenar descargas en carpetas
 9. Revisa el historial en la pestana "Historial"
-10. Exporta el historial a CSV con el boton "Exportar"
+10. Exporta el historial a CSV con el boton "Exportar" (incluye columna Origen)
 
 ## Arquitectura
 
@@ -108,7 +126,8 @@ Extension para descargar documentos XML y PDF del portal SRI Ecuador (srienlinea
 | `storage` | Guardar historial, configuracion y preferencias |
 | `notifications` | Notificar al completar descarga masiva |
 
-Solo funciona en `srienlinea.sri.gob.ec`.
+Hosts permitidos: `srienlinea.sri.gob.ec` (portal) y `cel.sri.gob.ec` / `celcer.sri.gob.ec`
+(web service publico de autorizacion, usado para obtener el XML de los emitidos).
 
 ## Configuracion
 

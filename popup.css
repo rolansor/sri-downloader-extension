@@ -774,3 +774,36 @@ body {
     border-color: #555;
   }
 }
+
+/* =====================================================
+   Modo emitidos: acento verde agua para diferenciar el
+   entorno de trabajo (recibidos mantiene el azul)
+   ===================================================== */
+
+body.modo-emitidos .header { border-bottom-color: #009688; }
+body.modo-emitidos .header h1 { color: #009688; }
+body.modo-emitidos .btn-primary { background: #009688; }
+body.modo-emitidos .btn-primary:hover:not(:disabled) { background: #00796b; }
+body.modo-emitidos .tab-btn.active { background: #009688; }
+body.modo-emitidos .radio-option input,
+body.modo-emitidos input[type="date"] { accent-color: #009688; }
+body.modo-emitidos .progress-fill { background: #009688; }
+
+/* Boton del menu que lleva a emitidos, siempre verde agua */
+.sri-link-emitidos { background: #009688; border-color: #009688; }
+.sri-link-emitidos:hover { background: #00796b; color: white; }
+
+/* Historial: los emitidos EXITOSOS llevan borde verde agua; los fallidos
+   conservan el borde rojo del estado (el origen se lee en el texto) */
+.historial-item.exitoso.origen-emitidos { border-left-color: #009688; }
+
+@media (prefers-color-scheme: dark) {
+  body.modo-emitidos .header { border-bottom-color: #26a69a; }
+  body.modo-emitidos .header h1 { color: #26a69a; }
+  body.modo-emitidos .btn-primary { background: #00897b; }
+  body.modo-emitidos .btn-primary:hover:not(:disabled) { background: #00796b; }
+  body.modo-emitidos .tab-btn.active { background: #00897b; }
+  .sri-link-emitidos { background: #00897b; border-color: #00897b; }
+  .sri-link-emitidos:hover { background: #00796b; }
+  .historial-item.exitoso.origen-emitidos { border-left-color: #26a69a; }
+}

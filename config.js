@@ -50,7 +50,7 @@ var SRI_CONFIG = {
   DOMINIO_SRI: 'sri.gob.ec',
 
   // Organizacion de archivos descargados
-  // Ruta fija: carpetaRaiz / [orden] / recibidos / tipoDoc / archivo.ext
+  // Ruta: carpetaRaiz / [orden] / [recibidos|emitidos] / tipoDoc / [xml|pdf] / archivo.ext
   // Donde [orden] es 'ruc_fecha' (ruc/anio/mes) o 'fecha_ruc' (anio/mes/ruc)
   ORGANIZACION: {
     HABILITADO: false,

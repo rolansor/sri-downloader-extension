@@ -126,7 +126,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 /**
- * Genera un ID unico para la sesion de descarga
+ * Genera un ID unico para la sesion de descarga.
+ * @returns {string} ID con timestamp + sufijo aleatorio (ej: "sesion_1700000000000_ab12cd34e")
  */
 function generarSesionId() {
   return `sesion_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -142,7 +143,22 @@ let bufferSesion = {
 let indiceDescargados = new Set();
 
 /**
- * Construye un Set con claves de acceso ya descargadas exitosamente
+ * Construye un Set con claves de acceso ya descargadas exitosamente, usado
+ * para deduplicar en O(1) durante la sesion.
+ *
+ * Semantica de exitoXml/exitoPdf en el historial:
+ * - null  = ese formato NO se intento (no fue solicitado o el doc no tenia link)
+ * - true  = se descargo correctamente
+ * - false = se intento y fallo
+ * Solo se cuenta como "cubierto" un formato si ademas la sesion realmente lo
+ * solicito (sesion.tipoDescarga), porque registros de versiones viejas
+ * guardaban true por defecto sin haberlo intentado.
+ *
+ * Un documento entra al indice solo si cubre lo que la NUEVA sesion pide:
+ * 'xml' requiere xmlOk, 'pdf' requiere pdfOk, 'ambos' requiere los dos.
+ * Esto es deliberadamente conservador: ante duda se re-descarga.
+ * @param {'xml'|'pdf'|'ambos'} tipoDescarga - Tipo solicitado en la nueva sesion
+ * @returns {Promise<Set<string>>} Claves de acceso que se pueden omitir
  */
 async function construirIndiceDescargados(tipoDescarga) {
   const data = await chrome.storage.local.get(['historialDescargas']);
@@ -171,16 +187,21 @@ async function construirIndiceDescargados(tipoDescarga) {
 }
 
 /**
- * Agrega un documento al buffer en memoria (no escribe a storage)
+ * Agrega un documento al buffer en memoria (no escribe a storage).
+ * @param {Object} registro - Registro del documento procesado (clave, exito, etc.)
  */
 function agregarAlBuffer(registro) {
   bufferSesion.documentos.push(registro);
 }
 
 /**
- * Guarda el buffer al storage. Se llama incrementalmente (por pagina) para no
- * perder el registro si Chrome termina el service worker MV3 a mitad de una
- * descarga larga, y al finalizar con esFinal=true para limpiar el buffer.
+ * Guarda el buffer al storage bajo el sesionId actual (sobreescribe la misma
+ * sesion en cada llamada, no duplica). Se llama incrementalmente (al terminar
+ * cada pagina) porque Chrome puede terminar el service worker MV3 en cualquier
+ * momento de una descarga larga y el buffer en memoria se perderia; y al
+ * finalizar con esFinal=true para ademas limpiar el buffer.
+ * @param {boolean} [esFinal=true] - true limpia el buffer tras guardar
+ * @returns {Promise<void>}
  */
 async function guardarBufferAlStorage(esFinal = true) {
   if (bufferSesion.documentos.length === 0) return;
@@ -227,7 +248,9 @@ async function guardarBufferAlStorage(esFinal = true) {
 }
 
 /**
- * Obtiene el historial de descargas
+ * Obtiene el historial de descargas desde storage.
+ * @param {string|null} [ruc=null] - Si se indica, devuelve solo el historial de ese RUC
+ * @returns {Promise<Object|null>} Historial completo, el de un RUC, o null si falla
  */
 async function obtenerHistorial(ruc = null) {
   try {
@@ -244,7 +267,9 @@ async function obtenerHistorial(ruc = null) {
 }
 
 /**
- * Limpia historial antiguo (mas de N dias segun config)
+ * Limpia sesiones del historial con mas de N dias de antiguedad
+ * (SRI_CONFIG.DIAS_HISTORIAL) y elimina RUCs que quedan sin sesiones.
+ * @returns {Promise<void>}
  */
 async function limpiarHistorialAntiguo() {
   try {
@@ -274,7 +299,9 @@ async function limpiarHistorialAntiguo() {
 let metodoDescarga = 'mojarra';
 
 /**
- * Carga la configuracion del usuario desde storage
+ * Carga la configuracion del usuario desde storage y la aplica sobre
+ * SRI_CONFIG (solo las claves definidas; el resto conserva los defaults).
+ * @returns {Promise<void>}
  */
 async function cargarConfigUsuario() {
   const data = await chrome.storage.local.get(['sriConfig']);
@@ -294,8 +321,18 @@ async function cargarConfigUsuario() {
 }
 
 /**
- * Ejecuta descarga usando mojarra.jsfcljs (metodo directo JSF)
- * Llama la funcion JSF directamente sin pasar por el click del DOM
+ * Ejecuta descarga usando mojarra.jsfcljs (metodo directo JSF).
+ * Llama la funcion JSF directamente sin pasar por el click del DOM. Requiere
+ * world: 'MAIN' porque mojarra solo existe en el contexto de la pagina y el
+ * CSP del SRI bloquea scripts inline.
+ * La confirmacion de exito NO es el return del script sino que
+ * chrome.downloads.onCreated se dispare dentro de TIMEOUT_DESCARGA
+ * (via pendingDownload), evitando marcar OK descargas que nunca ocurrieron.
+ * @param {number} tabId - Tab del SRI
+ * @param {string} linkId - ID del link JSF de descarga (ej: "frmPrincipal:...:lnkXml")
+ * @param {Object} docMetadata - Metadata del documento para organizar el archivo
+ * @param {'xml'|'pdf'} tipoArchivo - Formato que se esta descargando
+ * @returns {Promise<boolean>} true si la descarga fue confirmada por onCreated
  */
 function ejecutarDescargaMojarra(tabId, linkId, docMetadata, tipoArchivo) {
   return new Promise((resolve) => {
@@ -353,8 +390,14 @@ function ejecutarDescargaMojarra(tabId, linkId, docMetadata, tipoArchivo) {
 }
 
 /**
- * Ejecuta descarga usando click emulado en el elemento
- * Simula un click de usuario en el link de descarga
+ * Ejecuta descarga usando click emulado en el link de descarga.
+ * Alternativa mas compatible (pero mas lenta) al metodo mojarra; misma
+ * confirmacion via chrome.downloads.onCreated que ejecutarDescargaMojarra.
+ * @param {number} tabId - Tab del SRI
+ * @param {string} linkId - ID del elemento link a clickear
+ * @param {Object} docMetadata - Metadata del documento para organizar el archivo
+ * @param {'xml'|'pdf'} tipoArchivo - Formato que se esta descargando
+ * @returns {Promise<boolean>} true si la descarga fue confirmada por onCreated
  */
 function ejecutarDescargaClick(tabId, linkId, docMetadata, tipoArchivo) {
   return new Promise((resolve) => {
@@ -406,7 +449,13 @@ function ejecutarDescargaClick(tabId, linkId, docMetadata, tipoArchivo) {
 }
 
 /**
- * Ejecuta la descarga usando el metodo configurado
+ * Ejecuta la descarga usando el metodo configurado por el usuario
+ * ('mojarra' por defecto, 'click' como alternativa compatible).
+ * @param {number} tabId - Tab del SRI
+ * @param {string} linkId - ID del link de descarga
+ * @param {Object} docMetadata - Metadata del documento
+ * @param {'xml'|'pdf'} tipoArchivo - Formato que se esta descargando
+ * @returns {Promise<boolean>} true si la descarga fue confirmada
  */
 function ejecutarDescargaSRI(tabId, linkId, docMetadata, tipoArchivo) {
   if (metodoDescarga === 'click') {
@@ -425,19 +474,23 @@ function ejecutarDescargaSRI(tabId, linkId, docMetadata, tipoArchivo) {
 /**
  * Des-escapa las entidades XML de una cadena (el WS devuelve el comprobante
  * con &lt; &gt; &amp; etc.). El service worker MV3 no tiene DOMParser, asi que
- * se resuelven manualmente las entidades nombradas y numericas.
+ * se resuelven manualmente. Se hace en UNA SOLA pasada con una alternancia
+ * para que el texto producido nunca se re-escanee (evita dobles
+ * decodificaciones como &amp;#38;lt; → &lt; → <).
  * @param {string} s - Cadena con entidades escapadas
  * @returns {string} XML des-escapado
  */
 function desescaparXml(s) {
-  return s
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&'); // &amp; al final para no re-expandir entidades
+  const nombradas = { lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' };
+  return s.replace(/&(#x[0-9a-fA-F]+|#\d+|lt|gt|quot|apos|amp);/g, (m, ent) => {
+    if (ent[0] === '#') {
+      const codigo = (ent[1] === 'x' || ent[1] === 'X')
+        ? parseInt(ent.slice(2), 16)
+        : parseInt(ent.slice(1), 10);
+      return String.fromCodePoint(codigo);
+    }
+    return nombradas[ent];
+  });
 }
 
 /**
@@ -523,6 +576,10 @@ async function descargarXmlEmitido(claveAcceso, docMetadata) {
 
 /**
  * Descarga el XML de un emitido via web service, con reintentos automaticos
+ * (SRI_CONFIG.MAX_REINTENTOS, con DELAY_REINTENTO entre intentos).
+ * @param {string} claveAcceso - Clave de acceso de 49 digitos
+ * @param {Object} docMetadata - Metadata para organizar/nombrar el archivo
+ * @returns {Promise<boolean>} true si se disparo la descarga
  */
 async function descargarXmlEmitidoConReintento(claveAcceso, docMetadata) {
   for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
@@ -536,7 +593,13 @@ async function descargarXmlEmitidoConReintento(claveAcceso, docMetadata) {
 }
 
 /**
- * Ejecuta descarga con reintentos automaticos
+ * Ejecuta una descarga por link de la pagina con reintentos automaticos
+ * (SRI_CONFIG.MAX_REINTENTOS, con DELAY_REINTENTO entre intentos).
+ * @param {number} tabId - Tab del SRI
+ * @param {string} linkId - ID del link de descarga
+ * @param {Object} docMetadata - Metadata del documento
+ * @param {'xml'|'pdf'} tipoArchivo - Formato que se esta descargando
+ * @returns {Promise<boolean>} true si alguna de las ejecuciones tuvo exito
  */
 async function ejecutarConReintento(tabId, linkId, docMetadata, tipoArchivo) {
   for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
@@ -550,9 +613,13 @@ async function ejecutarConReintento(tabId, linkId, docMetadata, tipoArchivo) {
 }
 
 /**
- * Obtiene datos de la pagina actual via executeScript.
+ * Obtiene datos de la pagina actual via executeScript: filas de la tabla
+ * (segun origen), paginacion y RUC del usuario logueado.
+ * En emitidos la tabla no trae link XML (el XML se obtiene despues del web
+ * service con la clave de acceso) y el emisor es el propio usuario.
  * @param {number} tabId - Tab del SRI
  * @param {'recibidos'|'emitidos'} [origen='recibidos'] - Tabla a extraer
+ * @returns {Promise<{documentos: Array<Object>, paginacion: {actual: number, total: number}, rucUsuario: string, origen: string}|{error: string}>}
  */
 async function obtenerDatosPagina(tabId, origen = 'recibidos') {
   try {
@@ -641,7 +708,9 @@ async function obtenerDatosPagina(tabId, origen = 'recibidos') {
 }
 
 /**
- * Navega a la primera pagina
+ * Navega a la primera pagina del paginador PrimeFaces.
+ * @param {number} tabId - Tab del SRI
+ * @returns {Promise<boolean>} false solo si executeScript fallo
  */
 async function navegarPrimera(tabId) {
   try {
@@ -660,7 +729,9 @@ async function navegarPrimera(tabId) {
 }
 
 /**
- * Navega a la siguiente pagina
+ * Navega a la siguiente pagina del paginador PrimeFaces.
+ * @param {number} tabId - Tab del SRI
+ * @returns {Promise<boolean>} true si el boton existia y se clickeo
  */
 async function navegarSiguiente(tabId) {
   try {
@@ -683,11 +754,19 @@ async function navegarSiguiente(tabId) {
 }
 
 /**
- * Espera inteligente: verifica que el paginador muestre la pagina esperada
+ * Espera inteligente de paginacion: hace polling cada 500ms hasta que el
+ * paginador muestre la pagina esperada, en vez de un delay fijo (el servidor
+ * del SRI tiene latencia variable). Con timeout TIMEOUT_PAGINA como tope.
+ * @param {number} tabId - Tab del SRI
+ * @param {number} paginaEsperada - Numero de pagina que debe aparecer
+ * @param {'recibidos'|'emitidos'} [origen='recibidos'] - Tabla consultada
+ * @returns {Promise<boolean>} true si la pagina cambio; false por timeout o detencion
  */
 async function esperarCambioPagina(tabId, paginaEsperada, origen = 'recibidos') {
   const inicio = Date.now();
   while (Date.now() - inicio < SRI_CONFIG.TIMEOUT_PAGINA) {
+    // Responder de inmediato al boton Detener
+    if (estadoDescarga.detenido) return false;
     const datos = await obtenerDatosPagina(tabId, origen);
     if (datos.paginacion?.actual === paginaEsperada) return true;
     await delay(500);
@@ -695,12 +774,23 @@ async function esperarCambioPagina(tabId, paginaEsperada, origen = 'recibidos') 
   return false;
 }
 
+/**
+ * Espera asincrona simple.
+ * @param {number} ms - Milisegundos a esperar
+ * @returns {Promise<void>}
+ */
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // --- Funciones de organizacion de archivos ---
 
+/**
+ * Sanitiza un nombre para usarlo como carpeta/archivo en Windows y Unix:
+ * reemplaza caracteres invalidos, colapsa espacios y limita a 100 caracteres.
+ * @param {string} nombre - Nombre original
+ * @returns {string} Nombre seguro para el filesystem
+ */
 function sanitizarNombreCarpeta(nombre) {
   return nombre
     .replace(/[/\\:*?"<>|]/g, '_')
@@ -709,6 +799,11 @@ function sanitizarNombreCarpeta(nombre) {
     .substring(0, 100) || 'sin_nombre';
 }
 
+/**
+ * Parsea una fecha del SRI en formato dd/mm/aaaa (o dd/mm/aaaa hh:mm:ss).
+ * @param {string} fechaStr - Fecha como la muestra el SRI
+ * @returns {{dia: string, mes: string, anio: string}|null} Partes de la fecha o null
+ */
 function parsearFechaSRI(fechaStr) {
   if (!fechaStr) return null;
   const partes = fechaStr.split('/');
@@ -729,6 +824,13 @@ function limpiarTipoDoc(tipoDoc) {
   return sanitizarNombreCarpeta(tipoLimpio || 'sin_tipo').toLowerCase().replace(/\s+/g, '_');
 }
 
+/**
+ * Construye el nombre del archivo segun el formato configurado.
+ * @param {'claveAcceso'|'ruc_serie'|'razon_serie'} formato - Formato elegido
+ * @param {Object} metadata - Metadata del documento (ruc, serie, razonSocial, claveAcceso)
+ * @param {string} extension - Extension con punto (.xml, .pdf)
+ * @returns {string} Nombre del archivo con extension
+ */
 function construirNombreArchivo(formato, metadata, extension) {
   switch (formato) {
     case 'ruc_serie': {
@@ -749,9 +851,10 @@ function construirNombreArchivo(formato, metadata, extension) {
 
 /**
  * Construye la ruta completa del archivo organizado.
- * Estructura fija: carpetaRaiz / [ruc+fecha o fecha+ruc] / recibidos / tipoDoc / nombre.ext
- * @param {Object} metadata - Metadata del documento
- * @param {string} tipoArchivo - 'xml' o 'pdf'
+ * Estructura: carpetaRaiz / [ruc+fecha o fecha+ruc] / [recibidos|emitidos] / tipoDoc / [xml|pdf] / nombre.ext
+ * El nivel recibidos/emitidos sale de metadata.origen.
+ * @param {Object} metadata - Metadata del documento (incluye origen y rucUsuario)
+ * @param {'xml'|'pdf'} tipoArchivo - Formato del archivo
  * @param {string} extension - Extension del archivo con punto (.xml, .pdf)
  * @returns {string|null} Ruta relativa completa o null si organizacion deshabilitada
  */
@@ -785,7 +888,9 @@ function construirRutaArchivo(metadata, tipoArchivo, extension) {
 }
 
 /**
- * Actualiza el badge del icono de la extension
+ * Actualiza el badge del icono de la extension con el conteo de exitosos
+ * (verde sin fallos, naranja con fallos). Al terminar la descarga limpia el
+ * badge tras 5s, salvo que otra descarga haya empezado en ese lapso.
  */
 function actualizarBadge() {
   if (estadoDescarga.activo) {
@@ -804,7 +909,9 @@ function actualizarBadge() {
 }
 
 /**
- * Notifica el progreso al popup (si esta abierto)
+ * Notifica el progreso al popup via mensaje 'estadoDescarga'. El catch vacio
+ * es intencional: si el popup esta cerrado no hay receptor y sendMessage
+ * rechaza, lo cual es normal (la descarga sigue en el background).
  */
 function notificarProgreso() {
   chrome.runtime.sendMessage({
@@ -814,7 +921,9 @@ function notificarProgreso() {
 }
 
 /**
- * Calcula tiempo estimado restante
+ * Calcula el tiempo estimado restante segun el promedio por documento
+ * de lo transcurrido en la sesion actual.
+ * @returns {number|null} Milisegundos estimados o null si aun no hay datos
  */
 function calcularTiempoEstimado() {
   if (!estadoDescarga.timestampInicio || estadoDescarga.documentoActual === 0) {
@@ -827,12 +936,16 @@ function calcularTiempoEstimado() {
 }
 
 /**
- * Envia notificacion nativa de Chrome al finalizar
+ * Envia una notificacion nativa de Chrome al finalizar la descarga
+ * (funciona aunque el popup este cerrado).
  */
 function notificarFinalizacion() {
-  const mensaje = estadoDescarga.detenido
-    ? `Detenido: ${estadoDescarga.exitosos} OK, ${estadoDescarga.fallidos} fallidos`
-    : `Completado: ${estadoDescarga.exitosos} OK, ${estadoDescarga.fallidos} fallidos`;
+  // Priorizar el motivo del error si la descarga termino de forma anomala
+  const mensaje = estadoDescarga.error
+    ? `Error: ${estadoDescarga.error}`
+    : estadoDescarga.detenido
+      ? `Detenido: ${estadoDescarga.exitosos} OK, ${estadoDescarga.fallidos} fallidos`
+      : `Completado: ${estadoDescarga.exitosos} OK, ${estadoDescarga.fallidos} fallidos`;
 
   chrome.notifications.create({
     type: 'basic',
@@ -844,9 +957,19 @@ function notificarFinalizacion() {
 
 /**
  * Procesa un documento: dedup, descarga XML/PDF segun tipo, registra en buffer.
+ *
  * exitoXml/exitoPdf usan null = no se intento ese formato (no solicitado o sin
  * link), true/false = resultado real. Asi la deduplicacion no confunde
- * "no intentado" con "descargado" ni "fallido".
+ * "no intentado" con "descargado" ni "fallido" (ver construirIndiceDescargados).
+ *
+ * En emitidos el XML no se descarga desde la pagina (no existe link) sino
+ * consultando el web service de autorizacion con la clave de acceso.
+ * @param {number} tabId - Tab del SRI
+ * @param {Object} doc - Documento extraido de la tabla
+ * @param {'xml'|'pdf'|'ambos'} tipoDescarga - Formatos solicitados
+ * @param {number} pagina - Numero de pagina de donde salio el documento
+ * @param {'recibidos'|'emitidos'} [origen='recibidos'] - Pantalla de origen
+ * @returns {Promise<void>}
  */
 async function procesarDocumento(tabId, doc, tipoDescarga, pagina, origen = 'recibidos') {
   estadoDescarga.documentoActual++;
@@ -939,7 +1062,12 @@ async function procesarDocumento(tabId, doc, tipoDescarga, pagina, origen = 'rec
  * Procesa todas las paginas de la tabla actualmente consultada en el SRI.
  * Asume que estadoDescarga ya esta inicializado. Acumula sobre
  * estadoDescarga.totalDocumentos para soportar varias consultas en una
- * misma sesion (modo mes de emitidos).
+ * misma sesion (modo mes de emitidos, que llama esta funcion una vez por dia).
+ * Guarda el buffer a storage al terminar cada pagina para no perder registro
+ * si Chrome termina el service worker MV3 durante una descarga larga.
+ * @param {number} tabId - Tab del SRI
+ * @param {'xml'|'pdf'|'ambos'} tipoDescarga - Formatos solicitados
+ * @param {'recibidos'|'emitidos'} origen - Pantalla/tabla a procesar
  * @returns {Promise<string|null>} Mensaje de error o null si todo fue bien
  */
 async function procesarPaginasActuales(tabId, tipoDescarga, origen) {
@@ -1004,7 +1132,13 @@ async function procesarPaginasActuales(tabId, tipoDescarga, origen) {
 }
 
 /**
- * Proceso principal de descarga de todas las paginas
+ * Proceso principal de descarga: todas las paginas de la consulta en pantalla.
+ * Corre en el background para sobrevivir al cierre del popup.
+ * @param {number} tabId - Tab del SRI con la consulta ejecutada
+ * @param {'xml'|'pdf'|'ambos'} tipoDescarga - Formatos solicitados
+ * @param {boolean} [ignorarHistorial=false] - true re-descarga todo (indice de dedup vacio)
+ * @param {'recibidos'|'emitidos'} [origen='recibidos'] - Pantalla de origen
+ * @returns {Promise<void>}
  */
 async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = false, origen = 'recibidos') {
   // Cargar configuracion del usuario
@@ -1072,6 +1206,11 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
  * Descarga solo los documentos seleccionados (por clave de acceso) de la
  * pagina actual. La seleccion es explicita del usuario, asi que no se
  * aplica deduplicacion contra el historial.
+ * @param {number} tabId - Tab del SRI
+ * @param {'xml'|'pdf'|'ambos'} tipoDescarga - Formatos solicitados
+ * @param {string[]} claves - Claves de acceso marcadas en el popup
+ * @param {'recibidos'|'emitidos'} [origen='recibidos'] - Pantalla de origen
+ * @returns {Promise<void>}
  */
 async function descargarSeleccionados(tabId, tipoDescarga, claves, origen = 'recibidos') {
   await cargarConfigUsuario();
@@ -1139,9 +1278,17 @@ async function descargarSeleccionados(tabId, tipoDescarga, claves, origen = 'rec
 }
 
 /**
- * Setea la fecha en el formulario de emitidos y pulsa Consultar (MAIN world).
- * Marca la tabla actual con un atributo para poder detectar cuando el AJAX
- * de PrimeFaces la reemplaza con los nuevos resultados.
+ * Setea la fecha en el formulario de emitidos y pulsa Consultar (MAIN world,
+ * porque el CSP del SRI bloquea scripts inline y el evento change debe llegar
+ * al JSF de la pagina).
+ *
+ * Antes de consultar marca la tabla y el contenedor .ui-messages con el
+ * atributo data-sri-esperando: el AJAX de PrimeFaces reemplaza esos nodos al
+ * responder, asi que la DESAPARICION del atributo es la senal de que llego la
+ * respuesta nueva. Sin el marcador no se podria distinguir la tabla/mensaje
+ * viejos de los nuevos (dias consecutivos pueden verse identicos). Los
+ * atributos DOM son visibles entre el world MAIN y el ISOLATED, por eso se
+ * usa un atributo y no una variable JS.
  * @param {number} tabId - Tab del SRI
  * @param {string} fechaStr - Fecha en formato dd/mm/aaaa
  * @returns {Promise<boolean>} true si se pudo disparar la consulta
@@ -1173,15 +1320,20 @@ function setearFechaYConsultar(tabId, fechaStr) {
 }
 
 /**
- * Espera a que el AJAX de la consulta de emitidos termine, detectado por la
- * desaparicion del atributo marcador en la tabla o en el contenedor de
- * mensajes (los atributos DOM son visibles entre worlds).
+ * Espera (polling cada 500ms) a que el AJAX de la consulta de emitidos
+ * termine, detectado por la desaparicion del atributo marcador
+ * data-sri-esperando en la tabla o en el contenedor de mensajes
+ * (ver setearFechaYConsultar).
+ * @param {number} tabId - Tab del SRI
  * @returns {Promise<'datos'|'vacio'|'timeout'>} 'datos' si hay tabla nueva,
  *   'vacio' si el SRI respondio "No existen datos", 'timeout' si no se supo
+ *   (tambien al detener manualmente, para salir del bucle de inmediato)
  */
 async function esperarResultadosEmitidos(tabId) {
   const inicio = Date.now();
   while (Date.now() - inicio < SRI_CONFIG.TIMEOUT_PAGINA) {
+    // Responder de inmediato al boton Detener
+    if (estadoDescarga.detenido) return 'timeout';
     try {
       const r = await chrome.scripting.executeScript({
         target: { tabId: tabId },
@@ -1206,7 +1358,11 @@ async function esperarResultadosEmitidos(tabId) {
 
 /**
  * Verifica si la pantalla de emitidos muestra "No existen datos para los
- * parametros ingresados" (dia sin comprobantes).
+ * parametros ingresados" (dia sin comprobantes). Se usa como confirmacion
+ * cuando el marcador no alcanzo a detectar la respuesta (timeout) o cuando
+ * procesarPaginasActuales no encontro tabla.
+ * @param {number} tabId - Tab del SRI
+ * @returns {Promise<boolean>} true si el mensaje esta visible en la pagina
  */
 async function verificarSinDatosEmitidos(tabId) {
   try {
@@ -1222,13 +1378,24 @@ async function verificarSinDatosEmitidos(tabId) {
 
 /**
  * Descarga los comprobantes emitidos de un mes completo. El formulario del
- * SRI solo acepta una fecha, asi que se consulta y descarga dia por dia.
+ * SRI solo acepta UNA fecha por consulta (no un rango), asi que se consulta
+ * y descarga dia por dia. La iteracion llega solo hasta AYER: el SRI rechaza
+ * consultar el dia en curso ("la fecha debe ser menor a la fecha actual").
+ *
+ * Manejo por dia:
+ * - 'vacio' (mensaje "No existen datos"): se salta al siguiente dia.
+ * - 'timeout': margen extra y re-verificacion; si el SRI muestra "No existen
+ *   datos", se salta el dia.
+ * - Error de procesarPaginasActuales: solo se continua si en realidad fue un
+ *   dia sin datos; cualquier otro fallo (sesion caida, cambio de pantalla)
+ *   aborta el mes para no enmascarar errores reales.
  * La deduplicacion omite lo ya descargado salvo que ignorarHistorial sea true.
  * @param {number} tabId - Tab del SRI (debe estar en la pantalla de emitidos)
- * @param {string} tipoDescarga - 'xml' | 'pdf' | 'ambos'
+ * @param {'xml'|'pdf'|'ambos'} tipoDescarga - Formatos solicitados
  * @param {boolean} ignorarHistorial - Re-descargar aunque ya exista
  * @param {number} anio - Anio del mes a descargar
  * @param {number} mes - Mes 1-12
+ * @returns {Promise<void>}
  */
 async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio, mes) {
   await cargarConfigUsuario();
@@ -1269,11 +1436,13 @@ async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio,
   // en curso da error en el SRI
   const hoy = new Date();
   const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  let diasProcesados = 0;
 
   for (let dia = 1; dia <= totalDias; dia++) {
     if (estadoDescarga.detenido) break;
     if (new Date(anio, mes - 1, dia) >= inicioHoy) break;
 
+    diasProcesados++;
     estadoDescarga.diaActual = dia;
     estadoDescarga.paginaActual = 1;
     notificarProgreso();
@@ -1287,23 +1456,33 @@ async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio,
     }
 
     const resultado = await esperarResultadosEmitidos(tabId);
+    if (estadoDescarga.detenido) break;
 
-    // Dia sin comprobantes: continuar con el siguiente
+    // Dia sin comprobantes (mensaje "No existen datos" detectado): siguiente dia
     if (resultado === 'vacio') continue;
 
+    // Timeout: dar margen extra; si el SRI muestra "No existen datos", saltar
     if (resultado === 'timeout') {
-      // Dar margen extra; si el SRI respondio "sin datos", saltar el dia
       await delay(SRI_CONFIG.DELAY_PAGINA);
+      if (estadoDescarga.detenido) break;
       if (await verificarSinDatosEmitidos(tabId)) continue;
     }
 
     const error = await procesarPaginasActuales(tabId, tipoDescarga, 'emitidos');
     if (error) {
-      // Sin tabla + mensaje "No existen datos" = dia vacio, no un fallo real
+      // Continuar SOLO si el SRI realmente respondio "No existen datos"
+      // (dia sin comprobantes); cualquier otro fallo aborta para no
+      // enmascarar errores reales (sesion caida, cambio de pantalla, etc.)
       if (await verificarSinDatosEmitidos(tabId)) continue;
       estadoDescarga.error = error;
       break;
     }
+  }
+
+  // Caso borde: mes actual y hoy es dia 1 → no hay dias anteriores a hoy
+  // que consultar; avisar en vez de terminar en silencio con 0 documentos
+  if (diasProcesados === 0 && !estadoDescarga.detenido && !estadoDescarga.error) {
+    estadoDescarga.error = 'El mes seleccionado no tiene dias anteriores a hoy para consultar.';
   }
 
   await guardarBufferAlStorage(true);
@@ -1317,7 +1496,9 @@ async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio,
   notificarFinalizacion();
 }
 
-// Escuchar mensajes
+// Escuchar mensajes del popup. Los handlers sincronos responden y retornan
+// false; los que consultan storage retornan true para mantener el canal de
+// sendResponse abierto hasta que la promesa resuelva.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'iniciarDescargaTotal') {
@@ -1368,6 +1549,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Nota: el popup actual ya no envia 'obtenerFallidos' (reintentar fallidos
+  // ahora relanza una descarga total y la deduplicacion omite los exitosos);
+  // se mantiene el handler por compatibilidad
   if (request.action === 'obtenerFallidos') {
     obtenerHistorial()
       .then(historial => {
@@ -1415,28 +1599,59 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // Navegar a la pantalla de comprobantes emitidos: la URL de "Consultas
-  // (produccion)" cae en menu.jsf con un menu de seleccion; al cargar se
-  // hace click en la opcion "Comprobantes electronicos emitidos"
+  // Navegar a la pantalla de comprobantes emitidos. Se navega a
+  // accederAplicacion.jspa (redireccion=60) y NO a la URL directa del .jsf:
+  // accederAplicacion hace el handshake SSO que inicializa la sesion de la
+  // aplicacion de comprobantes; la URL directa rebota al login si esa sesion
+  // no existe. El destino es menu.jsf con un menu de seleccion; al cargar se
+  // hace click en la opcion "Comprobantes electronicos emitidos", se
+  // preselecciona el tipo de comprobante y se consulta automaticamente
   if (request.action === 'navegarAEmitidos') {
     const tabId = request.tabId;
+    const tipoComprobante = request.tipoComprobante || null;
     chrome.tabs.update(tabId, { url: request.url });
 
     const listener = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
         chrome.tabs.onUpdated.removeListener(listener);
-        // Reintentar varias veces porque la pagina SRI carga contenido con AJAX
+        // Reintentar cada 1s (max 10) porque la pagina SRI carga contenido
+        // con AJAX y el click en el menu intermedio tarda en surtir efecto
         let intentos = 0;
         const intervalo = setInterval(() => {
           intentos++;
           chrome.scripting.executeScript({
             target: { tabId },
             world: 'MAIN',
-            func: () => {
+            func: (tipoComprobante) => {
               // Ya estamos en la pantalla de emitidos: consultar de una vez
-              // (no hay captcha) para que la tabla aparezca sin accion manual
-              if (document.getElementById('frmPrincipal:calendarFechaDesde_input')) {
-                document.getElementById('frmPrincipal:btnConsultar')?.click();
+              // (no hay captcha). El form trae la fecha de HOY por defecto y
+              // el SRI la rechaza ("debe ser menor a la fecha actual"), asi
+              // que se consulta el primer dia del mes (o ayer si hoy es dia 1)
+              const inp = document.getElementById('frmPrincipal:calendarFechaDesde_input');
+              if (inp) {
+                const hoy = new Date();
+                let fecha = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+                if (hoy.getDate() === 1) {
+                  fecha = new Date(hoy.getFullYear(), hoy.getMonth(), 0); // ultimo dia del mes anterior
+                }
+                const dd = String(fecha.getDate()).padStart(2, '0');
+                const mm = String(fecha.getMonth() + 1).padStart(2, '0');
+                inp.value = `${dd}/${mm}/${fecha.getFullYear()}`;
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+
+                // Preseleccionar el tipo de comprobante elegido en el menu
+                if (tipoComprobante) {
+                  const sel = document.getElementById('frmPrincipal:cmbTipoComprobante');
+                  if (sel) {
+                    sel.value = tipoComprobante;
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                }
+
+                // Margen breve por si el cambio de tipo dispara AJAX propio
+                setTimeout(() => {
+                  document.getElementById('frmPrincipal:btnConsultar')?.click();
+                }, 800);
                 return true;
               }
               // Menu intermedio: click en la opcion de emitidos (la siguiente
@@ -1445,7 +1660,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 .find(a => /emitidos/i.test(a.textContent));
               if (link) link.click();
               return false;
-            }
+            },
+            args: [tipoComprobante]
           }).then(result => {
             if (result?.[0]?.result || intentos >= 10) {
               clearInterval(intervalo);

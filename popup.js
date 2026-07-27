@@ -36,7 +36,8 @@ const selectAll = document.getElementById('selectAll');
 const btnDescargarTodo = document.getElementById('btnDescargarTodo');
 /** Contenedor de opciones dia/mes (solo visible en emitidos) */
 const opcionesEmitidos = document.getElementById('opcionesEmitidos');
-/** Input de mes para la descarga mensual de emitidos */
+/** Input type=date para la descarga mensual de emitidos: se descarga el MES
+ *  completo de la fecha elegida (el dia solo sirve para abrir el datepicker) */
 const mesEmitidos = document.getElementById('mesEmitidos');
 /** Boton para iniciar descarga ignorando el historial (re-descarga todo) */
 const btnDescargarSinHistorial = document.getElementById('btnDescargarSinHistorial');
@@ -267,14 +268,21 @@ function actualizarUIEstado(estado) {
       }, 3000);
 
       // Mantener el mensaje de omitidos visible mas tiempo para que el usuario lo lea
+      // (si hubo error, el mensaje de error no se auto-oculta)
       if (estado.exitosos === 0 && estado.fallidos === 0 && estado.omitidos > 0) {
-        setTimeout(() => { statusBox.style.display = 'none'; }, 8000);
+        setTimeout(() => { if (!estado.error) statusBox.style.display = 'none'; }, 8000);
       } else {
-        setTimeout(() => { statusBox.style.display = 'none'; }, 3000);
+        setTimeout(() => { if (!estado.error) statusBox.style.display = 'none'; }, 3000);
       }
     } else {
       // No hubo actividad previa, simplemente ocultar barra
       progressContainer.classList.remove('active');
+    }
+
+    // Si la descarga termino con un error real (sesion caida, dia no
+    // consultable, tab cerrada...), mostrarlo de forma persistente
+    if (estado.error) {
+      mostrarEstado(`Error: ${estado.error}`, 'error');
     }
 
     // Restaurar estado de botones
@@ -396,20 +404,22 @@ async function cargarDocumentos() {
       paginacion = response?.paginacion || { actual: 1, total: 1 };
       origenDetectado = response?.origen || 'recibidos';
 
+      // Tema verde agua cuando trabajamos sobre emitidos (azul = recibidos)
+      document.body.classList.toggle('modo-emitidos', origenDetectado === 'emitidos');
+
       // Mostrar opciones dia/mes solo cuando estamos en emitidos
       opcionesEmitidos.style.display = origenDetectado === 'emitidos' ? 'block' : 'none';
       if (origenDetectado === 'emitidos') {
+        const hoy = new Date();
+        // No permitir fechas futuras
+        mesEmitidos.max = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
         if (!mesEmitidos.value) {
-          const hoy = new Date();
-          mesEmitidos.value = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+          // Primer dia del mes actual; el mes a descargar es el de la fecha elegida
+          mesEmitidos.value = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
         }
-        // Aplicar el rango por defecto configurado (mes salvo que se cambie en Config)
-        chrome.runtime.sendMessage({ action: 'obtenerConfig' }, (respCfg) => {
-          const rango = respCfg?.config?.EMITIDOS_RANGO || CONFIG_DEFAULTS.EMITIDOS_RANGO;
-          const radio = document.querySelector(`input[name="rangoEmitidos"][value="${rango}"]`);
-          if (radio) radio.checked = true;
-          mesEmitidos.style.display = getRangoEmitidos() === 'mes' ? 'block' : 'none';
-        });
+        // Sincronizar visibilidad del selector de mes con el radio actual
+        // (mes viene marcado por defecto en el HTML)
+        mesEmitidos.style.display = getRangoEmitidos() === 'mes' ? 'block' : 'none';
         // Sin consulta en pantalla: avisar que el modo mes consulta solo
         if (documentos.length === 0) {
           mostrarEstado('No hay consulta en pantalla. Con "Mes completo" la extension consultara dia por dia automaticamente.', 'info');
@@ -502,13 +512,15 @@ async function iniciarDescarga(ignorarHistorial = false) {
   let payload;
 
   if (esMes) {
-    const mesValor = mesEmitidos.value; // formato "aaaa-mm"
+    const mesValor = mesEmitidos.value; // formato "aaaa-mm-dd" (date input)
     if (!mesValor) {
-      mostrarEstado('Selecciona el mes a descargar', 'info');
+      mostrarEstado('Selecciona una fecha del mes a descargar', 'info');
       return;
     }
+    // Solo importan anio y mes: el dia elegido se descarta (se descarga el mes entero)
     const [anio, mes] = mesValor.split('-').map(Number);
-    mensaje = `Se descargaran los comprobantes emitidos (${tipoTexto}) de TODO el mes ${mesValor}, consultando dia por dia.` +
+    const mesTexto = `${String(mes).padStart(2, '0')}/${anio}`;
+    mensaje = `Se descargaran los comprobantes emitidos (${tipoTexto}) de TODO el mes ${mesTexto}, consultando dia por dia.` +
       (ignorarHistorial
         ? '\n\nIGNORANDO el historial: se re-descargara todo aunque ya exista.'
         : '\n\nDocumentos ya descargados se omitiran automaticamente.') +
@@ -644,6 +656,15 @@ document.querySelectorAll('input[name="rangoEmitidos"]').forEach(radio => {
     mesEmitidos.style.display = getRangoEmitidos() === 'mes' ? 'block' : 'none';
   });
 });
+
+/** Abrir el datepicker al hacer click en cualquier parte del input de fecha */
+mesEmitidos.addEventListener('click', () => {
+  try {
+    mesEmitidos.showPicker();
+  } catch (e) {
+    // showPicker requiere gesto del usuario; el click lo es, pero por si acaso
+  }
+});
 /** Boton "Descargar ignorando historial": inicia descarga forzada */
 btnDescargarSinHistorial.addEventListener('click', iniciarDescargaSinHistorial);
 
@@ -751,7 +772,8 @@ async function cargarHistorial() {
         docs.push(...sesion.documentos.map(d => ({
           ...d,
           rucUsuario: ruc,
-          sesionId: sesionId
+          sesionId: sesionId,
+          origen: sesion.origen || 'recibidos'
         })));
       }
     }
@@ -788,7 +810,7 @@ async function cargarHistorial() {
 
     docs.forEach(doc => {
       const item = document.createElement('div');
-      item.className = `fallido-item historial-item ${doc.exito ? 'exitoso' : 'fallido'}`;
+      item.className = `fallido-item historial-item ${doc.exito ? 'exitoso' : 'fallido'}${doc.origen === 'emitidos' ? ' origen-emitidos' : ''}`;
 
       // Formatear fecha al formato ecuatoriano (dd/mm/yy HH:mm)
       const fecha = new Date(doc.fechaDescarga).toLocaleString('es-EC', {
@@ -802,15 +824,19 @@ async function cargarHistorial() {
       const detalleDiv = document.createElement('div');
       detalleDiv.className = 'fallido-detalle';
 
-      // Indicador de exito/fallo con tipo y serie del documento
+      // Indicador de exito/fallo con tipo y serie del documento (en emitidos
+      // el tipoDoc ya incluye la serie; evitar duplicarla)
       const tipoDiv = document.createElement('div');
       tipoDiv.className = 'fallido-tipo';
-      tipoDiv.textContent = `${doc.exito ? '\u2713' : '\u2717'} ${doc.tipoDoc || ''} ${doc.serie || ''}`;
+      const tipoTexto = doc.serie && (doc.tipoDoc || '').includes(doc.serie)
+        ? doc.tipoDoc
+        : `${doc.tipoDoc || ''} ${doc.serie || ''}`.trim();
+      tipoDiv.textContent = `${doc.exito ? '\u2713' : '\u2717'} ${tipoTexto}`;
 
-      // RUC y razon social del emisor
+      // RUC y razon social del emisor (emitidos no tiene razon social)
       const rucDiv = document.createElement('div');
       rucDiv.className = 'fallido-ruc';
-      rucDiv.textContent = `RUC: ${doc.ruc || ''} - ${doc.razonSocial || ''}`;
+      rucDiv.textContent = `RUC: ${doc.ruc || ''}${doc.razonSocial ? ' - ' + doc.razonSocial : ''}`;
 
       detalleDiv.appendChild(tipoDiv);
       detalleDiv.appendChild(rucDiv);
@@ -823,10 +849,10 @@ async function cargarHistorial() {
         detalleDiv.appendChild(errorDiv);
       }
 
-      // Fecha de descarga
+      // Fecha de descarga + origen (emitido/recibido)
       const fechaDiv = document.createElement('div');
       fechaDiv.className = 'fallido-fecha';
-      fechaDiv.textContent = fecha;
+      fechaDiv.textContent = `${fecha} · ${doc.origen === 'emitidos' ? 'Emitido' : 'Recibido'}`;
 
       infoDiv.appendChild(detalleDiv);
       infoDiv.appendChild(fechaDiv);
@@ -867,7 +893,8 @@ async function limpiarHistorial() {
 
 /**
  * Exporta el historial completo a un archivo CSV con codificacion UTF-8 (BOM).
- * Incluye: RUC emisor, razon social, tipo, serie, clave de acceso, fechas, estado y errores.
+ * Incluye: origen (emitido/recibido), RUC emisor, razon social, tipo, serie,
+ * clave de acceso, fechas, estado y errores.
  * Usa chrome.downloads.download para que el usuario elija donde guardar el archivo.
  */
 async function exportarHistorial() {
@@ -888,7 +915,7 @@ async function exportarHistorial() {
     };
 
     // Cabecera del CSV
-    filas.push(['RUC Emisor', 'Razon Social', 'Tipo Doc', 'Serie', 'Clave Acceso', 'Fecha Emision', 'Fecha Autorizacion', 'Estado', 'Error', 'Fecha Descarga'].join(','));
+    filas.push(['Origen', 'RUC Emisor', 'Razon Social', 'Tipo Doc', 'Serie', 'Clave Acceso', 'Fecha Emision', 'Fecha Autorizacion', 'Estado', 'Error', 'Fecha Descarga'].join(','));
 
     // Recorrer toda la estructura del historial y generar filas CSV
     for (const ruc in historial) {
@@ -896,6 +923,7 @@ async function exportarHistorial() {
         const sesion = historial[ruc].sesiones[sesionId];
         for (const doc of sesion.documentos) {
           const fila = [
+            sesion.origen === 'emitidos' ? 'Emitido' : 'Recibido',
             doc.ruc || '',
             celdaSegura(doc.razonSocial),
             celdaSegura(doc.tipoDoc),
@@ -999,8 +1027,6 @@ function mostrarModal(texto) {
  * @type {Object}
  */
 const CONFIG_DEFAULTS = {
-  /** Rango por defecto al descargar emitidos: 'mes' (dia por dia) o 'dia' */
-  EMITIDOS_RANGO: 'mes',
   /** Milisegundos de espera entre cada descarga individual */
   DELAY_DESCARGA: 300,
   /** Milisegundos maximo de espera por cada descarga antes de timeout */
@@ -1111,10 +1137,6 @@ function cargarConfigUI() {
     const metodo = cfg.METODO_DESCARGA || 'mojarra';
     const metodoRadio = document.querySelector(`input[name="metodoDescarga"][value="${metodo}"]`);
     if (metodoRadio) metodoRadio.checked = true;
-    // Rango por defecto de emitidos (mes por defecto)
-    const rangoEmit = cfg.EMITIDOS_RANGO || CONFIG_DEFAULTS.EMITIDOS_RANGO;
-    const rangoRadio = document.querySelector(`input[name="cfgRangoEmitidos"][value="${rangoEmit}"]`);
-    if (rangoRadio) rangoRadio.checked = true;
     configStatus.textContent = '';
   });
 }
@@ -1150,8 +1172,7 @@ function guardarConfig() {
     DELAY_REINTENTO: leerConfigNum('cfgDelayReintento', CONFIG_DEFAULTS.DELAY_REINTENTO),
     MAX_REINTENTOS: leerConfigNum('cfgMaxReintentos', CONFIG_DEFAULTS.MAX_REINTENTOS),
     DIAS_HISTORIAL: leerConfigNum('cfgDiasHistorial', CONFIG_DEFAULTS.DIAS_HISTORIAL),
-    METODO_DESCARGA: document.querySelector('input[name="metodoDescarga"]:checked')?.value || 'mojarra',
-    EMITIDOS_RANGO: document.querySelector('input[name="cfgRangoEmitidos"]:checked')?.value || CONFIG_DEFAULTS.EMITIDOS_RANGO
+    METODO_DESCARGA: document.querySelector('input[name="metodoDescarga"]:checked')?.value || 'mojarra'
   };
 
   chrome.runtime.sendMessage({ action: 'guardarConfig', config }, (response) => {
@@ -1182,8 +1203,6 @@ function resetConfig() {
   document.getElementById('cfgDiasHistorial').value = CONFIG_DEFAULTS.DIAS_HISTORIAL;
   const mojarraRadio = document.querySelector('input[name="metodoDescarga"][value="mojarra"]');
   if (mojarraRadio) mojarraRadio.checked = true;
-  const rangoMesRadio = document.querySelector('input[name="cfgRangoEmitidos"][value="mes"]');
-  if (rangoMesRadio) rangoMesRadio.checked = true;
 
   // Guardar los defaults en storage
   const resetConfig = { ...CONFIG_DEFAULTS, METODO_DESCARGA: 'mojarra' };
@@ -1364,10 +1383,18 @@ const SRI_MENU = [
     { nombre: 'Notas de Debito', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '4' },
     { nombre: 'Comprobantes de Retencion', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '6' },
   ]},
-  // URL directa de la pantalla de emitidos (validada en vivo); si el SRI
-  // redirige al menu intermedio, navegarAEmitidos hace click en la opcion
-  { nombre: 'Descargar emitidos', primary: true, esEmitidos: true,
-    url: 'https://srienlinea.sri.gob.ec/comprobantes-electronicos-internet/pages/consultas/recuperarComprobantes.jsf' },
+  // Emitidos via accederAplicacion (hace el handshake SSO; la URL directa al
+  // .jsf rebota al login si la sesion de la app no esta inicializada). Cae en
+  // menu.jsf y navegarAEmitidos hace click en la opcion de emitidos, setea el
+  // tipo de comprobante y consulta automaticamente
+  { nombre: 'Descargar emitidos', primary: true, esEmitidos: true, items: [
+    { nombre: 'Facturas', esEmitidos: true, url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58', tipoComprobante: '1' },
+    { nombre: 'Liquidaciones de compra', esEmitidos: true, url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58', tipoComprobante: '2' },
+    { nombre: 'Notas de Credito', esEmitidos: true, url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58', tipoComprobante: '3' },
+    { nombre: 'Notas de Debito', esEmitidos: true, url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58', tipoComprobante: '4' },
+    { nombre: 'Guias de Remision', esEmitidos: true, url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58', tipoComprobante: '5' },
+    { nombre: 'Comprobantes de Retencion', esEmitidos: true, url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58', tipoComprobante: '6' },
+  ]},
   { nombre: 'Claves', items: [
     { nombre: 'Cambiar clave', url: 'https://srienlinea.sri.gob.ec/sri-en-linea/SriClaves/Generacion/internet/actualizar' },
     { nombre: 'Crear y administrar usuarios', url: 'https://srienlinea.sri.gob.ec/sri-en-linea/SriClaves/UsuariosAdicionales/administracion' },
@@ -1455,9 +1482,12 @@ function renderSriMenu() {
     const btn = document.createElement('a');
     btn.className = 'sri-link sri-link-primary';
     btn.textContent = primary.nombre;
+    if (primary.esEmitidos) btn.classList.add('sri-link-emitidos');
     if (primary.items) {
       btn.addEventListener('click', () => renderSriSubmenu(primary));
     } else if (primary.esEmitidos) {
+      // Fallback para un primario de emitidos sin sub-items (actualmente
+      // 'Descargar emitidos' siempre tiene items, asi que no se ejecuta)
       btn.addEventListener('click', () => navegarSRIEmitidos(primary.url));
     } else {
       btn.addEventListener('click', () => navegarSRI(primary.url));
@@ -1523,7 +1553,9 @@ function renderSriSubmenu(category) {
     const btn = document.createElement('a');
     btn.className = 'sri-link';
     btn.textContent = item.nombre;
-    btn.addEventListener('click', () => navegarSRI(item.url, item.tipoComprobante));
+    btn.addEventListener('click', () => item.esEmitidos
+      ? navegarSRIEmitidos(item.url, item.tipoComprobante)
+      : navegarSRI(item.url, item.tipoComprobante));
     grid.appendChild(btn);
   });
 
@@ -1531,14 +1563,19 @@ function renderSriSubmenu(category) {
 }
 
 /**
- * Navega a la pantalla de comprobantes emitidos. La URL de "Consultas
- * (produccion)" cae en un menu intermedio (menu.jsf); el background espera
- * la carga y hace click en la opcion "Comprobantes electronicos emitidos".
+ * Navega a la pantalla de comprobantes emitidos. Se usa la URL de
+ * accederAplicacion.jspa (y no la URL directa del .jsf) porque esa ruta hace
+ * el handshake SSO que inicializa la sesion de la app de comprobantes; la
+ * URL directa rebota al login. Cae en un menu intermedio (menu.jsf); el
+ * background espera la carga, hace click en la opcion "Comprobantes
+ * electronicos emitidos", preselecciona el tipo de comprobante y dispara la
+ * consulta automaticamente.
  * @param {string} url - URL de accederAplicacion.jspa (redireccion=60)
+ * @param {string} [tipoComprobante] - 1=Factura 2=Liq 3=NC 4=ND 5=Guia 6=Ret
  */
-async function navegarSRIEmitidos(url) {
+async function navegarSRIEmitidos(url, tipoComprobante) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.runtime.sendMessage({ action: 'navegarAEmitidos', tabId: tab.id, url });
+  chrome.runtime.sendMessage({ action: 'navegarAEmitidos', tabId: tab.id, url, tipoComprobante });
   window.close();
 }
 
@@ -1565,10 +1602,6 @@ async function navegarSRI(url, tipoComprobante) {
 // =====================================================
 
 /**
- * Punto de entrada principal: al cargar el DOM del popup,
- * restaura las preferencias del usuario y carga los documentos de la pagina actual.
- */
-/**
  * Detecta si el navegador es Edge y muestra advertencia sobre SmartScreen.
  * La advertencia se puede descartar y se recuerda la preferencia.
  */
@@ -1589,6 +1622,10 @@ function detectarEdge() {
   });
 }
 
+/**
+ * Punto de entrada principal: al cargar el DOM del popup,
+ * restaura las preferencias del usuario y carga los documentos de la pagina actual.
+ */
 document.addEventListener('DOMContentLoaded', () => {
   detectarEdge();
   restaurarTipoDescarga();

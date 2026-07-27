@@ -88,7 +88,7 @@
             Dia consultado
           </label>
         </div>
-        <input type="month" id="mesEmitidos" class="config-input" style="width: 100%;">
+        <input type="date" id="mesEmitidos" class="config-input" style="width: 100%; cursor: pointer;" title="Se descargara el mes completo de la fecha elegida">
       </div>
 
       <button id="btnDescargarTodo" class="btn btn-primary">
@@ -199,21 +199,6 @@
     </div>
 
     <div class="options-section">
-      <h3 style="margin-bottom: 12px;">Comprobantes emitidos</h3>
-      <div class="radio-group" style="margin-bottom: 4px;">
-        <label class="radio-option">
-          <input type="radio" name="cfgRangoEmitidos" value="mes" checked>
-          Mes completo
-        </label>
-        <label class="radio-option">
-          <input type="radio" name="cfgRangoEmitidos" value="dia">
-          Dia consultado
-        </label>
-      </div>
-      <p style="font-size: 10px; color: #999; margin-top: 4px;">Rango por defecto al descargar emitidos. El mes se consulta dia por dia automaticamente.</p>
-    </div>
-
-    <div class="options-section">
       <h3 style="margin-bottom: 12px;">Reintentos e historial</h3>
 
       <div class="config-row">
@@ -300,7 +285,7 @@
   </div>
 
   <div class="footer">
-    v1.4.0 - Solo para uso en srienlinea.sri.gob.ec
+    v1.5.0 - Solo para uso en srienlinea.sri.gob.ec
   </div>
 
   <script src="popup.js"></script>
