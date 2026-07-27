@@ -398,13 +398,27 @@ async function cargarDocumentos() {
 
       // Mostrar opciones dia/mes solo cuando estamos en emitidos
       opcionesEmitidos.style.display = origenDetectado === 'emitidos' ? 'block' : 'none';
-      if (origenDetectado === 'emitidos' && !mesEmitidos.value) {
-        const hoy = new Date();
-        mesEmitidos.value = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+      if (origenDetectado === 'emitidos') {
+        if (!mesEmitidos.value) {
+          const hoy = new Date();
+          mesEmitidos.value = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+        }
+        // Aplicar el rango por defecto configurado (mes salvo que se cambie en Config)
+        chrome.runtime.sendMessage({ action: 'obtenerConfig' }, (respCfg) => {
+          const rango = respCfg?.config?.EMITIDOS_RANGO || CONFIG_DEFAULTS.EMITIDOS_RANGO;
+          const radio = document.querySelector(`input[name="rangoEmitidos"][value="${rango}"]`);
+          if (radio) radio.checked = true;
+          mesEmitidos.style.display = getRangoEmitidos() === 'mes' ? 'block' : 'none';
+        });
+        // Sin consulta en pantalla: avisar que el modo mes consulta solo
+        if (documentos.length === 0) {
+          mostrarEstado('No hay consulta en pantalla. Con "Mes completo" la extension consultara dia por dia automaticamente.', 'info');
+        }
       }
 
-      // No hay documentos en la tabla actual
-      if (documentos.length === 0) {
+      // No hay documentos en la tabla actual. En emitidos se permite seguir:
+      // el modo mes consulta dia por dia automaticamente (sin captcha)
+      if (documentos.length === 0 && origenDetectado !== 'emitidos') {
         mostrarEstado('Navega y genera la consulta de los comprobantes para descargar.', 'info');
         mostrarSriLinks();
         return;
@@ -501,6 +515,10 @@ async function iniciarDescarga(ignorarHistorial = false) {
       '\n\n¿Continuar?';
     payload = { action: 'iniciarDescargaEmitidosMes', tipoDescarga, ignorarHistorial, anio, mes };
   } else {
+    if (documentos.length === 0) {
+      mostrarEstado('No hay documentos consultados en pantalla. Usa "Mes completo" o ejecuta la consulta primero.', 'info');
+      return;
+    }
     const estimado = documentos.length * paginacion.total;
     mensaje = ignorarHistorial
       ? `Se descargaran aprox. ${estimado} comprobantes ${origenDetectado} (${tipoTexto}) de ${paginacion.total} pagina(s) IGNORANDO el historial.\n\nTodos los documentos se descargaran aunque ya existan.\n\n¿Continuar?`
@@ -981,6 +999,8 @@ function mostrarModal(texto) {
  * @type {Object}
  */
 const CONFIG_DEFAULTS = {
+  /** Rango por defecto al descargar emitidos: 'mes' (dia por dia) o 'dia' */
+  EMITIDOS_RANGO: 'mes',
   /** Milisegundos de espera entre cada descarga individual */
   DELAY_DESCARGA: 300,
   /** Milisegundos maximo de espera por cada descarga antes de timeout */
@@ -1091,6 +1111,10 @@ function cargarConfigUI() {
     const metodo = cfg.METODO_DESCARGA || 'mojarra';
     const metodoRadio = document.querySelector(`input[name="metodoDescarga"][value="${metodo}"]`);
     if (metodoRadio) metodoRadio.checked = true;
+    // Rango por defecto de emitidos (mes por defecto)
+    const rangoEmit = cfg.EMITIDOS_RANGO || CONFIG_DEFAULTS.EMITIDOS_RANGO;
+    const rangoRadio = document.querySelector(`input[name="cfgRangoEmitidos"][value="${rangoEmit}"]`);
+    if (rangoRadio) rangoRadio.checked = true;
     configStatus.textContent = '';
   });
 }
@@ -1126,7 +1150,8 @@ function guardarConfig() {
     DELAY_REINTENTO: leerConfigNum('cfgDelayReintento', CONFIG_DEFAULTS.DELAY_REINTENTO),
     MAX_REINTENTOS: leerConfigNum('cfgMaxReintentos', CONFIG_DEFAULTS.MAX_REINTENTOS),
     DIAS_HISTORIAL: leerConfigNum('cfgDiasHistorial', CONFIG_DEFAULTS.DIAS_HISTORIAL),
-    METODO_DESCARGA: document.querySelector('input[name="metodoDescarga"]:checked')?.value || 'mojarra'
+    METODO_DESCARGA: document.querySelector('input[name="metodoDescarga"]:checked')?.value || 'mojarra',
+    EMITIDOS_RANGO: document.querySelector('input[name="cfgRangoEmitidos"]:checked')?.value || CONFIG_DEFAULTS.EMITIDOS_RANGO
   };
 
   chrome.runtime.sendMessage({ action: 'guardarConfig', config }, (response) => {
@@ -1157,6 +1182,8 @@ function resetConfig() {
   document.getElementById('cfgDiasHistorial').value = CONFIG_DEFAULTS.DIAS_HISTORIAL;
   const mojarraRadio = document.querySelector('input[name="metodoDescarga"][value="mojarra"]');
   if (mojarraRadio) mojarraRadio.checked = true;
+  const rangoMesRadio = document.querySelector('input[name="cfgRangoEmitidos"][value="mes"]');
+  if (rangoMesRadio) rangoMesRadio.checked = true;
 
   // Guardar los defaults en storage
   const resetConfig = { ...CONFIG_DEFAULTS, METODO_DESCARGA: 'mojarra' };

@@ -1158,9 +1158,12 @@ function setearFechaYConsultar(tabId, fechaStr) {
       inp.value = fecha;
       inp.dispatchEvent(new Event('change', { bubbles: true }));
 
-      // Marcar la tabla actual: cuando el AJAX la reemplace, el atributo desaparece
+      // Marcar tabla y contenedor de mensajes: cuando el AJAX los reemplace,
+      // el atributo desaparece (permite detectar dias con y sin datos)
       const tabla = document.querySelector(selectores.TABLA_EMITIDOS);
       if (tabla) tabla.setAttribute('data-sri-esperando', '1');
+      const msgs = document.querySelector('.ui-messages');
+      if (msgs) msgs.setAttribute('data-sri-esperando', '1');
 
       btn.click();
       return true;
@@ -1170,10 +1173,11 @@ function setearFechaYConsultar(tabId, fechaStr) {
 }
 
 /**
- * Espera a que el AJAX de la consulta de emitidos reemplace la tabla
- * (detectado por la desaparicion del atributo marcador). Los atributos DOM
- * son visibles entre worlds, asi que se lee desde el world aislado.
- * @returns {Promise<boolean>} true si la tabla se actualizo dentro del timeout
+ * Espera a que el AJAX de la consulta de emitidos termine, detectado por la
+ * desaparicion del atributo marcador en la tabla o en el contenedor de
+ * mensajes (los atributos DOM son visibles entre worlds).
+ * @returns {Promise<'datos'|'vacio'|'timeout'>} 'datos' si hay tabla nueva,
+ *   'vacio' si el SRI respondio "No existen datos", 'timeout' si no se supo
  */
 async function esperarResultadosEmitidos(tabId) {
   const inicio = Date.now();
@@ -1183,18 +1187,37 @@ async function esperarResultadosEmitidos(tabId) {
         target: { tabId: tabId },
         func: (selectores) => {
           const tabla = document.querySelector(selectores.TABLA_EMITIDOS);
-          if (!tabla) return false; // aun no hay tabla nueva
-          return !tabla.hasAttribute('data-sri-esperando');
+          if (tabla && !tabla.hasAttribute('data-sri-esperando')) return 'datos';
+          // Dia sin comprobantes: mensaje nuevo (sin marcador) "No existen datos"
+          const msgs = document.querySelector('.ui-messages');
+          if (msgs && !msgs.hasAttribute('data-sri-esperando') && /No existen datos/i.test(msgs.textContent)) return 'vacio';
+          return null;
         },
         args: [SRI_CONFIG.SELECTORES]
       });
-      if (r[0]?.result === true) return true;
+      if (r[0]?.result === 'datos' || r[0]?.result === 'vacio') return r[0].result;
     } catch (e) {
       // Tab ocupada o navegando; reintentar
     }
     await delay(500);
   }
-  return false;
+  return 'timeout';
+}
+
+/**
+ * Verifica si la pantalla de emitidos muestra "No existen datos para los
+ * parametros ingresados" (dia sin comprobantes).
+ */
+async function verificarSinDatosEmitidos(tabId) {
+  try {
+    const r = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: () => /No existen datos/i.test(document.body.innerText)
+    });
+    return r[0]?.result === true;
+  } catch (e) {
+    return false;
+  }
 }
 
 /**
@@ -1242,12 +1265,14 @@ async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio,
   actualizarBadge();
   notificarProgreso();
 
+  // Iterar desde el dia 1 hasta UN DIA ANTES del actual: consultar el dia
+  // en curso da error en el SRI
   const hoy = new Date();
+  const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
 
   for (let dia = 1; dia <= totalDias; dia++) {
     if (estadoDescarga.detenido) break;
-    // No consultar dias futuros
-    if (new Date(anio, mes - 1, dia) > hoy) break;
+    if (new Date(anio, mes - 1, dia) >= inicioHoy) break;
 
     estadoDescarga.diaActual = dia;
     estadoDescarga.paginaActual = 1;
@@ -1261,14 +1286,21 @@ async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio,
       break;
     }
 
-    const listo = await esperarResultadosEmitidos(tabId);
-    if (!listo) {
-      // Fallback: dar tiempo extra y continuar con lo que haya
+    const resultado = await esperarResultadosEmitidos(tabId);
+
+    // Dia sin comprobantes: continuar con el siguiente
+    if (resultado === 'vacio') continue;
+
+    if (resultado === 'timeout') {
+      // Dar margen extra; si el SRI respondio "sin datos", saltar el dia
       await delay(SRI_CONFIG.DELAY_PAGINA);
+      if (await verificarSinDatosEmitidos(tabId)) continue;
     }
 
     const error = await procesarPaginasActuales(tabId, tipoDescarga, 'emitidos');
     if (error) {
+      // Sin tabla + mensaje "No existen datos" = dia vacio, no un fallo real
+      if (await verificarSinDatosEmitidos(tabId)) continue;
       estadoDescarga.error = error;
       break;
     }
@@ -1401,15 +1433,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             target: { tabId },
             world: 'MAIN',
             func: () => {
-              // Ya estamos en la pantalla de emitidos
-              if (document.getElementById('frmPrincipal:calendarFechaDesde_input')) return true;
-              // Menu intermedio: click en la opcion de emitidos
-              const link = Array.from(document.querySelectorAll('#consultaDocumentoForm a'))
-                .find(a => /emitidos/i.test(a.textContent));
-              if (link) {
-                link.click();
+              // Ya estamos en la pantalla de emitidos: consultar de una vez
+              // (no hay captcha) para que la tabla aparezca sin accion manual
+              if (document.getElementById('frmPrincipal:calendarFechaDesde_input')) {
+                document.getElementById('frmPrincipal:btnConsultar')?.click();
                 return true;
               }
+              // Menu intermedio: click en la opcion de emitidos (la siguiente
+              // iteracion del intervalo hara la consulta automatica)
+              const link = Array.from(document.querySelectorAll('#consultaDocumentoForm a'))
+                .find(a => /emitidos/i.test(a.textContent));
+              if (link) link.click();
               return false;
             }
           }).then(result => {

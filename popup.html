@@ -80,15 +80,15 @@
       <div id="opcionesEmitidos" style="display: none; margin-bottom: 12px;">
         <div class="radio-group" style="margin-bottom: 6px;">
           <label class="radio-option">
-            <input type="radio" name="rangoEmitidos" value="dia" checked>
-            Dia consultado
-          </label>
-          <label class="radio-option">
-            <input type="radio" name="rangoEmitidos" value="mes">
+            <input type="radio" name="rangoEmitidos" value="mes" checked>
             Mes completo
           </label>
+          <label class="radio-option">
+            <input type="radio" name="rangoEmitidos" value="dia">
+            Dia consultado
+          </label>
         </div>
-        <input type="month" id="mesEmitidos" class="config-input" style="width: 100%; display: none;">
+        <input type="month" id="mesEmitidos" class="config-input" style="width: 100%;">
       </div>
 
       <button id="btnDescargarTodo" class="btn btn-primary">
@@ -196,6 +196,21 @@
         </label>
       </div>
       <p style="font-size: 10px; color: #999; margin-top: 4px;">Mojarra es mas rapido. Click emulado es mas compatible.</p>
+    </div>
+
+    <div class="options-section">
+      <h3 style="margin-bottom: 12px;">Comprobantes emitidos</h3>
+      <div class="radio-group" style="margin-bottom: 4px;">
+        <label class="radio-option">
+          <input type="radio" name="cfgRangoEmitidos" value="mes" checked>
+          Mes completo
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="cfgRangoEmitidos" value="dia">
+          Dia consultado
+        </label>
+      </div>
+      <p style="font-size: 10px; color: #999; margin-top: 4px;">Rango por defecto al descargar emitidos. El mes se consulta dia por dia automaticamente.</p>
     </div>
 
     <div class="options-section">

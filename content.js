@@ -27,6 +27,12 @@ function obtenerFilasTabla() {
     origen = 'emitidos';
   }
   if (!tabla) {
+    // Pantalla de emitidos sin consulta ejecutada (o dia sin datos): no hay
+    // tabla pero si el formulario de consulta. El popup permite igual el
+    // modo mes, que consulta dia por dia automaticamente.
+    if (document.querySelector(SRI_CONFIG.SELECTORES.EMITIDOS_FECHA_INPUT)) {
+      return { documentos: [], total: 0, origen: 'emitidos', sinConsulta: true };
+    }
     return { error: 'No se encontro la tabla de comprobantes. Asegurate de estar en la pagina correcta.' };
   }
 
