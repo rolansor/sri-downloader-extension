@@ -413,6 +413,112 @@ function ejecutarDescargaSRI(tabId, linkId, docMetadata, tipoArchivo) {
   return ejecutarDescargaMojarra(tabId, linkId, docMetadata, tipoArchivo);
 }
 
+// =====================================================
+// Descarga de XML de emitidos via web service del SRI
+// =====================================================
+// En la pantalla de emitidos no hay link de descarga de XML (solo el PDF/RIDE).
+// El XML autorizado se obtiene del WS publico AutorizacionComprobantesOffline
+// usando la clave de acceso. Requiere host_permissions para cel/celcer.sri.gob.ec.
+
+/**
+ * Des-escapa las entidades XML de una cadena (el WS devuelve el comprobante
+ * con &lt; &gt; &amp; etc.). El service worker MV3 no tiene DOMParser, asi que
+ * se resuelven manualmente las entidades nombradas y numericas.
+ * @param {string} s - Cadena con entidades escapadas
+ * @returns {string} XML des-escapado
+ */
+function desescaparXml(s) {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&'); // &amp; al final para no re-expandir entidades
+}
+
+/**
+ * Convierte un string XML a un data URL base64 (UTF-8). En el service worker
+ * MV3 no existe URL.createObjectURL, asi que se descarga via data URL.
+ * @param {string} xml - Contenido XML
+ * @returns {string} data URL descargable
+ */
+function xmlADataUrl(xml) {
+  const bytes = new TextEncoder().encode(xml);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return 'data:application/xml;base64,' + btoa(bin);
+}
+
+/**
+ * Consulta el WS de autorizacion del SRI y devuelve el XML del comprobante
+ * autorizado (des-escapado), o null si no esta autorizado o falla.
+ * @param {string} claveAcceso - Clave de acceso de 49 digitos
+ * @param {boolean} [pruebas=false] - Usar ambiente de pruebas (celcer)
+ * @returns {Promise<{xml: string, numeroAutorizacion: string, fechaAutorizacion: string}|null>}
+ */
+async function consultarXmlAutorizado(claveAcceso, pruebas = false) {
+  const endpoint = pruebas ? SRI_CONFIG.WS_AUTORIZACION.PRUEBAS : SRI_CONFIG.WS_AUTORIZACION.PRODUCCION;
+  const soap = '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="' +
+    SRI_CONFIG.WS_AUTORIZACION.NAMESPACE + '"><soapenv:Header/><soapenv:Body>' +
+    '<ec:autorizacionComprobante><claveAccesoComprobante>' + claveAcceso +
+    '</claveAccesoComprobante></ec:autorizacionComprobante></soapenv:Body></soapenv:Envelope>';
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': '' },
+    body: soap
+  });
+  if (!resp.ok) return null;
+
+  const txt = await resp.text();
+
+  // Verificar estado AUTORIZADO
+  const estado = (txt.match(/<estado>([^<]*)<\/estado>/) || [])[1];
+  if (estado !== 'AUTORIZADO') return null;
+
+  // Extraer el comprobante (viene escapado, puede o no estar en CDATA)
+  const m = txt.match(/<comprobante>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/comprobante>/);
+  if (!m || !m[1]) return null;
+
+  const xml = desescaparXml(m[1]).trim();
+  return {
+    xml,
+    numeroAutorizacion: (txt.match(/<numeroAutorizacion>([^<]*)<\/numeroAutorizacion>/) || [])[1] || '',
+    fechaAutorizacion: (txt.match(/<fechaAutorizacion>([^<]*)<\/fechaAutorizacion>/) || [])[1] || ''
+  };
+}
+
+/**
+ * Descarga el XML autorizado de un comprobante emitido via web service.
+ * Intenta produccion y, si no encuentra autorizacion, ambiente de pruebas.
+ * @param {string} claveAcceso - Clave de acceso de 49 digitos
+ * @param {Object} docMetadata - Metadata para organizar/nombrar el archivo
+ * @returns {Promise<boolean>} true si se disparo la descarga
+ */
+async function descargarXmlEmitido(claveAcceso, docMetadata) {
+  try {
+    let resultado = await consultarXmlAutorizado(claveAcceso, false);
+    if (!resultado) resultado = await consultarXmlAutorizado(claveAcceso, true);
+    if (!resultado) return false;
+
+    const url = xmlADataUrl(resultado.xml);
+    const meta = { ...docMetadata, rucUsuario: estadoDescarga.rucUsuario };
+    const ruta = construirRutaArchivo(meta, 'xml', '.xml');
+    const filename = ruta || `${claveAcceso}.xml`;
+
+    await chrome.downloads.download({
+      url,
+      filename,
+      conflictAction: ruta ? 'overwrite' : 'uniquify'
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 /**
  * Ejecuta descarga con reintentos automaticos
  */

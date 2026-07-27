@@ -23,13 +23,27 @@ var SRI_CONFIG = {
 
   // Selectores CSS del DOM del portal SRI
   SELECTORES: {
-    TABLA_RECIBIDOS: '#frmPrincipal\\:tablaCompRecibidos_data', // tbody de la tabla de comprobantes
+    TABLA_RECIBIDOS: '#frmPrincipal\\:tablaCompRecibidos_data', // tbody tabla de comprobantes recibidos
+    TABLA_EMITIDOS: '#frmPrincipal\\:tablaCompEmitidos_data',   // tbody tabla de comprobantes emitidos
     PAGINADOR: '.ui-paginator-current',                         // texto "(X of Y)" del paginador
     BOTON_SIGUIENTE: '.ui-paginator-next:not(.ui-state-disabled)', // boton siguiente pagina
     BOTON_PRIMERA: '.ui-paginator-first:not(.ui-state-disabled)',  // boton primera pagina
-    LINK_XML: '[id$=":lnkXml"]',                                // links de descarga XML por fila
-    LINK_PDF: '[id$=":lnkPdf"]',                                // links de descarga PDF por fila
+    LINK_XML: '[id$=":lnkXml"]',                                // links de descarga XML por fila (solo recibidos)
+    LINK_PDF: '[id$=":lnkPdf"]',                                // links de descarga PDF/RIDE por fila (ambas)
     RUC_USUARIO: '.area-usuario-blue span',                     // RUC del usuario logueado en topbar
+    // Emitidos: campos del formulario de consulta (fecha por dia, sin rango)
+    EMITIDOS_FECHA_INPUT: '#frmPrincipal\\:calendarFechaDesde_input', // fecha emision (dd/mm/aaaa)
+    EMITIDOS_CMB_TIPO: '#frmPrincipal\\:cmbTipoComprobante',    // 1=Fact 2=Liq 3=NC 4=ND 5=Guia 6=Ret
+    EMITIDOS_BTN_CONSULTAR: '#frmPrincipal\\:btnConsultar',     // boton Consultar (verificar id en vivo)
+  },
+
+  // Web service publico de autorizacion del SRI: entrega el XML autorizado a
+  // partir de la clave de acceso. Usado para el XML de emitidos (que no tiene
+  // link de descarga directa). Ambiente 2 = produccion (cel), 1 = pruebas (celcer).
+  WS_AUTORIZACION: {
+    PRODUCCION: 'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline',
+    PRUEBAS: 'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline',
+    NAMESPACE: 'http://ec.gob.sri.ws.autorizacion',
   },
 
   // Dominio para filtrar descargas

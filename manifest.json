@@ -11,7 +11,9 @@
     "notifications"
   ],
   "host_permissions": [
-    "https://srienlinea.sri.gob.ec/*"
+    "https://srienlinea.sri.gob.ec/*",
+    "https://cel.sri.gob.ec/*",
+    "https://celcer.sri.gob.ec/*"
   ],
   "action": {
     "default_popup": "popup.html",
