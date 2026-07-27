@@ -15,8 +15,10 @@ sri-downloader-extension/
 ├── content.js         # Content Script - extractor de datos DOM (~80 lineas)
 ├── popup.html         # UI del popup (4 tabs + accesos directos SRI + modal)
 ├── popup.js           # Logica del popup (menu SRI, config, organizacion, historial)
-├── popup.css          # Estilos (light + dark mode)
+├── popup.css          # Estilos (light + dark mode + tema verde agua emitidos)
 ├── icons/             # Iconos PNG y SVG (16, 48, 128)
+├── docs/              # Assets de la Chrome Web Store (descripcion + imagenes)
+├── dist/              # ZIPs para publicar (gitignored, se regeneran)
 ├── README.md
 └── CLAUDE.md
 ```
@@ -25,6 +27,8 @@ sri-downloader-extension/
 - Actualizar extension: `chrome://extensions/` > click en actualizar
 - Ver logs background: `chrome://extensions/` > "Service worker" > click para inspeccionar
 - Ver logs pagina: F12 en la pagina del SRI
+- Empaquetar para la Web Store (PowerShell):
+  `Compress-Archive -Path manifest.json, background.js, config.js, content.js, popup.html, popup.js, popup.css, icons -DestinationPath "dist\sri-downloader-vX.Y.Z.zip" -Force`
 
 ## Arquitectura clave
 
@@ -304,6 +308,51 @@ document.getElementById(linkId).click();
 - `storage` - Almacenamiento local para historial y configuracion
 - `notifications` - Notificacion al finalizar descarga
 - Host: `https://srienlinea.sri.gob.ec/*`
+
+## Publicacion en la Chrome Web Store
+
+### Que se sube
+Un ZIP con SOLO los archivos de la extension (nunca el repo entero):
+`manifest.json`, `background.js`, `config.js`, `content.js`, `popup.html`,
+`popup.js`, `popup.css` e `icons/`. Excluir: `docs/`, `dist/`, `README.md`,
+`CLAUDE.md`, `.git`. Generar con el comando de empaquetar de "Comandos utiles";
+queda en `dist/sri-downloader-vX.Y.Z.zip` (carpeta gitignored).
+
+### Checklist antes de publicar
+1. Subir la version en `manifest.json` Y en el footer de `popup.html`
+   (deben coincidir; la Web Store exige version mayor a la publicada)
+2. Verificar sintaxis de los JS (no hay Node instalado: servir el proyecto con
+   `python -m http.server` y validar con `new Function(src)` en una pestana
+   de Chrome; esprima de Python NO sirve, no soporta `?.` de ES2020)
+3. Probar el ZIP: descomprimirlo aparte y cargarlo con "Cargar descomprimida"
+4. Actualizar `docs/descripcion-webstore.md` si cambiaron las funcionalidades
+
+### Pasos en el Developer Dashboard
+1. chrome.google.com/webstore/devconsole > la extension
+2. Paquete > "Subir nuevo paquete" > arrastrar el ZIP de `dist/`
+3. Ficha del producto: descripcion desde `docs/descripcion-webstore.md`
+4. Imagenes (todas en `docs/`, PNG 24 bits SIN alfa, generadas con datos
+   ficticios — nunca subir capturas con datos de sesion reales):
+   - Promocional pequena 440x280: `promo-pequena-440x280.png`
+   - Marquesina 1400x560: `promo-marquesina-1400x560.png`
+   - Capturas 1280x800 (max 5): `captura-1..5-*.png`
+5. Enviar para revision
+
+### Justificacion de permisos (seccion de privacidad del dashboard)
+Los `host_permissions` de `cel.sri.gob.ec` y `celcer.sri.gob.ec` (agregados en
+v1.5.0) disparan re-revision. Justificacion usada:
+"Se usan para consultar el web service publico de autorizacion de comprobantes
+del SRI (AutorizacionComprobantesOffline) y obtener el XML autorizado de los
+comprobantes emitidos, que el portal no ofrece como descarga directa. Solo se
+envia la clave de acceso del comprobante; no se transmiten datos a terceros."
+Nota: los cambios de permisos alargan la revision (dias en vez de horas).
+
+### Regenerar las imagenes promocionales
+Se generan renderizando HTML en Chrome (nunca capturas de sesion real):
+mocks con datos ficticios (RUC 1790012345001, "COMERCIAL EJEMPLO S.A."),
+capturados con la accion zoom a la region exacta y normalizados con Pillow a
+RGB 24 bits sin alfa. Los HTML fuente viven en el scratchpad de la sesion que
+los creo; si hay que regenerarlos, recrear mocks equivalentes.
 
 ## Testing
 1. Ir a srienlinea.sri.gob.ec
