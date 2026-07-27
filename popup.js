@@ -11,6 +11,9 @@ let documentos = [];
 /** @type {{actual: number, total: number}} Informacion de paginacion de la tabla del SRI */
 let paginacion = { actual: 1, total: 1 };
 
+/** @type {'recibidos'|'emitidos'} Pantalla del SRI detectada en la tab activa */
+let origenDetectado = 'recibidos';
+
 // =====================================================
 // Referencias a elementos del DOM del popup
 // =====================================================
@@ -29,8 +32,12 @@ const paginaInfo = document.getElementById('paginaInfo');
 const docList = document.getElementById('docList');
 /** Checkbox para seleccionar/deseleccionar todos los documentos */
 const selectAll = document.getElementById('selectAll');
-/** Boton para iniciar descarga total (respeta historial) */
+/** Boton para iniciar descarga total del origen detectado (respeta historial) */
 const btnDescargarTodo = document.getElementById('btnDescargarTodo');
+/** Contenedor de opciones dia/mes (solo visible en emitidos) */
+const opcionesEmitidos = document.getElementById('opcionesEmitidos');
+/** Input de mes para la descarga mensual de emitidos */
+const mesEmitidos = document.getElementById('mesEmitidos');
 /** Boton para iniciar descarga ignorando el historial (re-descarga todo) */
 const btnDescargarSinHistorial = document.getElementById('btnDescargarSinHistorial');
 /** Boton para descargar solo los documentos seleccionados de la pagina actual */
@@ -212,8 +219,10 @@ function actualizarUIEstado(estado) {
       : 0;
     progressFill.style.width = `${Math.min(porcentaje, 98)}%`;
 
-    // Construir texto de progreso con pagina actual, exitosos, fallidos y omitidos
-    let textoProgreso = `Pag ${estado.paginaActual}/${estado.totalPaginas} - `;
+    // Construir texto de progreso con dia (modo mes), pagina, exitosos, fallidos y omitidos
+    let textoProgreso = '';
+    if (estado.totalDias) textoProgreso += `Dia ${estado.diaActual}/${estado.totalDias} - `;
+    textoProgreso += `Pag ${estado.paginaActual}/${estado.totalPaginas} - `;
     textoProgreso += `${estado.exitosos} OK`;
     if (estado.fallidos > 0) textoProgreso += `, ${estado.fallidos} fallidos`;
     if (estado.omitidos > 0) textoProgreso += `, ${estado.omitidos} omitidos`;
@@ -382,9 +391,17 @@ async function cargarDocumentos() {
         return;
       }
 
-      // Almacenar documentos y paginacion recibidos
+      // Almacenar documentos, paginacion y pantalla detectada (recibidos/emitidos)
       documentos = response?.documentos || [];
       paginacion = response?.paginacion || { actual: 1, total: 1 };
+      origenDetectado = response?.origen || 'recibidos';
+
+      // Mostrar opciones dia/mes solo cuando estamos en emitidos
+      opcionesEmitidos.style.display = origenDetectado === 'emitidos' ? 'block' : 'none';
+      if (origenDetectado === 'emitidos' && !mesEmitidos.value) {
+        const hoy = new Date();
+        mesEmitidos.value = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+      }
 
       // No hay documentos en la tabla actual
       if (documentos.length === 0) {
@@ -419,20 +436,9 @@ async function cargarDocumentos() {
 // =====================================================
 
 /**
- * Inicia la descarga de TODAS las paginas de documentos, respetando el historial.
- * Documentos ya descargados se omiten automaticamente (deduplicacion).
- * Muestra un modal de confirmacion con el estimado de documentos antes de iniciar.
+ * Pone la UI en modo "descargando" (botones deshabilitados, barra visible)
  */
-async function iniciarDescargaTotal() {
-  const tipoDescarga = getTipoDescarga();
-
-  // Calcular estimado de documentos y mostrar confirmacion al usuario
-  const estimado = documentos.length * paginacion.total;
-  const tipoTexto = tipoDescarga === 'ambos' ? 'XML + PDF' : tipoDescarga.toUpperCase();
-  const aceptado = await mostrarModal(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s).\n\nDocumentos ya descargados se omitiran automaticamente.\n\n¿Continuar?`);
-  if (!aceptado) return;
-
-  // Deshabilitar controles y mostrar barra de progreso
+function prepararUIDescarga() {
   btnDescargarTodo.disabled = true;
   btnDescargarSinHistorial.disabled = true;
   btnDescargarSeleccionados.disabled = true;
@@ -441,83 +447,95 @@ async function iniciarDescargaTotal() {
   controlesDescarga.style.display = 'none';
   progressFill.style.width = '0%';
   progressText.textContent = 'Iniciando descarga...';
-
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-    // Enviar mensaje al background para iniciar la descarga
-    chrome.runtime.sendMessage({
-      action: 'iniciarDescargaTotal',
-      tabId: tab.id,
-      tipoDescarga: tipoDescarga,
-      ignorarHistorial: false
-    }, (response) => {
-      if (response?.status === 'ocupado') {
-        mostrarEstado('Ya hay una descarga en progreso', 'info');
-      }
-    });
-
-  } catch (error) {
-    // Restaurar UI en caso de error al iniciar
-    mostrarEstado(`Error: ${error.message}`, 'error');
-    btnDescargarTodo.disabled = false;
-    btnDescargarSinHistorial.disabled = false;
-    btnDescargarSeleccionados.disabled = false;
-    btnDetener.disabled = true;
-    progressContainer.classList.remove('active');
-    controlesDescarga.style.display = 'block';
-  }
 }
 
 /**
- * Inicia la descarga ignorando el historial previo.
- * Todos los documentos se descargan aunque ya existan en el historial.
- * Util para re-descargar documentos que pudieron haberse corrompido.
+ * Restaura la UI al estado inicial (descarga no iniciada)
  */
-async function iniciarDescargaSinHistorial() {
-  const tipoDescarga = getTipoDescarga();
+function restaurarUIDescarga() {
+  btnDescargarTodo.disabled = false;
+  btnDescargarSinHistorial.disabled = false;
+  btnDescargarSeleccionados.disabled = false;
+  btnDetener.disabled = true;
+  progressContainer.classList.remove('active');
+  controlesDescarga.style.display = 'block';
+}
 
-  // Calcular estimado y mostrar advertencia sobre ignorar historial
-  const estimado = documentos.length * paginacion.total;
+/**
+ * Lee el rango elegido para emitidos: 'dia' (lo consultado en pantalla)
+ * o 'mes' (iterar dia por dia todo el mes elegido)
+ * @returns {'dia'|'mes'}
+ */
+function getRangoEmitidos() {
+  return document.querySelector('input[name="rangoEmitidos"]:checked')?.value || 'dia';
+}
+
+/**
+ * Inicia la descarga segun la pantalla detectada (recibidos/emitidos).
+ * - Recibidos: flujo clasico de todas las paginas.
+ * - Emitidos por dia: igual, sobre lo consultado en pantalla.
+ * - Emitidos por mes: el background itera dia por dia del mes elegido,
+ *   consultando y descargando; la deduplicacion omite lo ya descargado
+ *   (salvo ignorarHistorial, que re-descarga todo).
+ * @param {boolean} [ignorarHistorial=false] - Re-descargar aunque ya existan
+ */
+async function iniciarDescarga(ignorarHistorial = false) {
+  const tipoDescarga = getTipoDescarga();
   const tipoTexto = tipoDescarga === 'ambos' ? 'XML + PDF' : tipoDescarga.toUpperCase();
-  const aceptado = await mostrarModal(`Se descargaran aprox. ${estimado} documentos (${tipoTexto}) de ${paginacion.total} pagina(s) IGNORANDO el historial.\n\nTodos los documentos se descargaran aunque ya existan.\n\n¿Continuar?`);
+  const esMes = origenDetectado === 'emitidos' && getRangoEmitidos() === 'mes';
+
+  let mensaje;
+  let payload;
+
+  if (esMes) {
+    const mesValor = mesEmitidos.value; // formato "aaaa-mm"
+    if (!mesValor) {
+      mostrarEstado('Selecciona el mes a descargar', 'info');
+      return;
+    }
+    const [anio, mes] = mesValor.split('-').map(Number);
+    mensaje = `Se descargaran los comprobantes emitidos (${tipoTexto}) de TODO el mes ${mesValor}, consultando dia por dia.` +
+      (ignorarHistorial
+        ? '\n\nIGNORANDO el historial: se re-descargara todo aunque ya exista.'
+        : '\n\nDocumentos ya descargados se omitiran automaticamente.') +
+      '\n\n¿Continuar?';
+    payload = { action: 'iniciarDescargaEmitidosMes', tipoDescarga, ignorarHistorial, anio, mes };
+  } else {
+    const estimado = documentos.length * paginacion.total;
+    mensaje = ignorarHistorial
+      ? `Se descargaran aprox. ${estimado} comprobantes ${origenDetectado} (${tipoTexto}) de ${paginacion.total} pagina(s) IGNORANDO el historial.\n\nTodos los documentos se descargaran aunque ya existan.\n\n¿Continuar?`
+      : `Se descargaran aprox. ${estimado} comprobantes ${origenDetectado} (${tipoTexto}) de ${paginacion.total} pagina(s).\n\nDocumentos ya descargados se omitiran automaticamente.\n\n¿Continuar?`;
+    payload = { action: 'iniciarDescargaTotal', tipoDescarga, ignorarHistorial, origen: origenDetectado };
+  }
+
+  const aceptado = await mostrarModal(mensaje);
   if (!aceptado) return;
 
-  // Deshabilitar controles y mostrar barra de progreso
-  btnDescargarTodo.disabled = true;
-  btnDescargarSinHistorial.disabled = true;
-  btnDescargarSeleccionados.disabled = true;
-  btnDetener.disabled = false;
-  progressContainer.classList.add('active');
-  controlesDescarga.style.display = 'none';
-  progressFill.style.width = '0%';
-  progressText.textContent = 'Iniciando descarga...';
+  prepararUIDescarga();
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    // Enviar mensaje al background con flag de ignorar historial
-    chrome.runtime.sendMessage({
-      action: 'iniciarDescargaTotal',
-      tabId: tab.id,
-      tipoDescarga: tipoDescarga,
-      ignorarHistorial: true
-    }, (response) => {
+    chrome.runtime.sendMessage({ ...payload, tabId: tab.id }, (response) => {
       if (response?.status === 'ocupado') {
         mostrarEstado('Ya hay una descarga en progreso', 'info');
       }
     });
 
   } catch (error) {
-    // Restaurar UI en caso de error al iniciar
     mostrarEstado(`Error: ${error.message}`, 'error');
-    btnDescargarTodo.disabled = false;
-    btnDescargarSinHistorial.disabled = false;
-    btnDescargarSeleccionados.disabled = false;
-    btnDetener.disabled = true;
-    progressContainer.classList.remove('active');
-    controlesDescarga.style.display = 'block';
+    restaurarUIDescarga();
   }
+}
+
+/** Boton "Descargar TODO": descarga respetando historial */
+function iniciarDescargaTotal() {
+  return iniciarDescarga(false);
+}
+
+/** Boton "Descargar ignorando historial": re-descarga todo */
+function iniciarDescargaSinHistorial() {
+  return iniciarDescarga(true);
 }
 
 /**
@@ -541,15 +559,7 @@ async function iniciarDescargaSeleccionados() {
     return;
   }
 
-  // Deshabilitar controles y mostrar barra de progreso
-  btnDescargarTodo.disabled = true;
-  btnDescargarSinHistorial.disabled = true;
-  btnDescargarSeleccionados.disabled = true;
-  btnDetener.disabled = false;
-  progressContainer.classList.add('active');
-  controlesDescarga.style.display = 'none';
-  progressFill.style.width = '0%';
-  progressText.textContent = 'Iniciando descarga...';
+  prepararUIDescarga();
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -558,7 +568,8 @@ async function iniciarDescargaSeleccionados() {
       action: 'iniciarDescargaSeleccionados',
       tabId: tab.id,
       tipoDescarga: getTipoDescarga(),
-      claves: claves
+      claves: claves,
+      origen: origenDetectado
     }, (response) => {
       if (response?.status === 'ocupado') {
         mostrarEstado('Ya hay una descarga en progreso', 'info');
@@ -566,14 +577,8 @@ async function iniciarDescargaSeleccionados() {
     });
 
   } catch (error) {
-    // Restaurar UI en caso de error al iniciar
     mostrarEstado(`Error: ${error.message}`, 'error');
-    btnDescargarTodo.disabled = false;
-    btnDescargarSinHistorial.disabled = false;
-    btnDescargarSeleccionados.disabled = false;
-    btnDetener.disabled = true;
-    progressContainer.classList.remove('active');
-    controlesDescarga.style.display = 'block';
+    restaurarUIDescarga();
   }
 }
 
@@ -614,6 +619,13 @@ selectAll.addEventListener('change', () => {
 
 /** Boton "Descargar TODO": inicia descarga respetando historial */
 btnDescargarTodo.addEventListener('click', iniciarDescargaTotal);
+
+/** Radios dia/mes de emitidos: mostrar el selector de mes solo en modo mes */
+document.querySelectorAll('input[name="rangoEmitidos"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    mesEmitidos.style.display = getRangoEmitidos() === 'mes' ? 'block' : 'none';
+  });
+});
 /** Boton "Descargar ignorando historial": inicia descarga forzada */
 btnDescargarSinHistorial.addEventListener('click', iniciarDescargaSinHistorial);
 
@@ -915,7 +927,7 @@ async function reintentarFallidos() {
   contentArea.style.display = 'block';
   historialArea.style.display = 'none';
 
-  // Iniciar descarga total (la deduplicacion se encarga de omitir exitosos)
+  // Iniciar descarga total del origen detectado (la deduplicacion omite exitosos)
   iniciarDescargaTotal();
 }
 

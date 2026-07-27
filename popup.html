@@ -76,6 +76,21 @@
         </label>
       </div>
 
+      <!-- Opciones de rango solo para emitidos (el form del SRI consulta un dia a la vez) -->
+      <div id="opcionesEmitidos" style="display: none; margin-bottom: 12px;">
+        <div class="radio-group" style="margin-bottom: 6px;">
+          <label class="radio-option">
+            <input type="radio" name="rangoEmitidos" value="dia" checked>
+            Dia consultado
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="rangoEmitidos" value="mes">
+            Mes completo
+          </label>
+        </div>
+        <input type="month" id="mesEmitidos" class="config-input" style="width: 100%; display: none;">
+      </div>
+
       <button id="btnDescargarTodo" class="btn btn-primary">
         Descargar TODO
       </button>

@@ -19,7 +19,13 @@ if (window.SRI_DOWNLOADER_LOADED) {
  * @returns {string} [].error - Mensaje de error si no se encontro la tabla
  */
 function obtenerFilasTabla() {
-  const tabla = document.querySelector(SRI_CONFIG.SELECTORES.TABLA_RECIBIDOS);
+  // Detectar en que pantalla estamos: recibidos o emitidos
+  let tabla = document.querySelector(SRI_CONFIG.SELECTORES.TABLA_RECIBIDOS);
+  let origen = 'recibidos';
+  if (!tabla) {
+    tabla = document.querySelector(SRI_CONFIG.SELECTORES.TABLA_EMITIDOS);
+    origen = 'emitidos';
+  }
   if (!tabla) {
     return { error: 'No se encontro la tabla de comprobantes. Asegurate de estar en la pagina correcta.' };
   }
@@ -29,10 +35,10 @@ function obtenerFilasTabla() {
 
   filas.forEach((fila, index) => {
     const celdas = fila.querySelectorAll('td');
-    if (celdas.length >= 6) {
-      const linkXml = fila.querySelector(SRI_CONFIG.SELECTORES.LINK_XML);
-      const linkPdf = fila.querySelector(SRI_CONFIG.SELECTORES.LINK_PDF);
+    const linkXml = fila.querySelector(SRI_CONFIG.SELECTORES.LINK_XML);
+    const linkPdf = fila.querySelector(SRI_CONFIG.SELECTORES.LINK_PDF);
 
+    if (origen === 'recibidos' && celdas.length >= 6) {
       documentos.push({
         index: index,            // Indice de la fila en la tabla
         nro: celdas[0]?.textContent?.trim() || '',        // Numero de fila
@@ -45,10 +51,27 @@ function obtenerFilasTabla() {
         linkXmlId: linkXml?.id,  // ID del elemento HTML del link XML
         linkPdfId: linkPdf?.id,  // ID del elemento HTML del link PDF
       });
+    } else if (origen === 'emitidos' && celdas.length >= 9) {
+      // Emitidos: Nro | Tipo y serie | Clave acceso | Fecha/hora aut | Fecha emision |
+      // Valor | IVA | Total | RIDE(pdf) | Docs relacionados. No hay link XML:
+      // el XML se obtiene del web service de autorizacion con la clave de acceso.
+      const claveAcceso = celdas[2]?.textContent?.trim() || '';
+      documentos.push({
+        index: index,
+        nro: celdas[0]?.textContent?.trim() || '',
+        ruc: '',                 // El emisor es el propio usuario (se completa en background)
+        tipoYSerie: celdas[1]?.textContent?.trim() || '',
+        claveAcceso: claveAcceso,
+        fecha: celdas[4]?.textContent?.trim() || '',       // Fecha de emision
+        tieneXml: !!claveAcceso, // XML disponible via web service
+        tienePdf: !!linkPdf,     // RIDE
+        linkXmlId: null,
+        linkPdfId: linkPdf?.id,
+      });
     }
   });
 
-  return { documentos, total: documentos.length };
+  return { documentos, total: documentos.length, origen };
 }
 
 /**

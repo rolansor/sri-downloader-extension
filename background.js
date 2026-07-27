@@ -19,6 +19,7 @@ let estadoDescarga = {
   documentoActual: 0,
   totalDocumentos: 0,
   tipoDescarga: 'xml',
+  origen: 'recibidos',
   tabId: null,
   sesionId: null,
   rucUsuario: null,
@@ -203,6 +204,7 @@ async function guardarBufferAlStorage(esFinal = true) {
     historial[ruc].sesiones[sesionId] = {
       fecha: new Date().toISOString(),
       tipoDescarga: estadoDescarga.tipoDescarga,
+      origen: estadoDescarga.origen || 'recibidos',
       documentos: bufferSesion.documentos,
       resumen: {
         exitosos: exitosos,
@@ -520,6 +522,20 @@ async function descargarXmlEmitido(claveAcceso, docMetadata) {
 }
 
 /**
+ * Descarga el XML de un emitido via web service, con reintentos automaticos
+ */
+async function descargarXmlEmitidoConReintento(claveAcceso, docMetadata) {
+  for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
+    const exito = await descargarXmlEmitido(claveAcceso, docMetadata);
+    if (exito) return true;
+    if (intento < SRI_CONFIG.MAX_REINTENTOS) {
+      await delay(SRI_CONFIG.DELAY_REINTENTO);
+    }
+  }
+  return false;
+}
+
+/**
  * Ejecuta descarga con reintentos automaticos
  */
 async function ejecutarConReintento(tabId, linkId, docMetadata, tipoArchivo) {
@@ -534,25 +550,32 @@ async function ejecutarConReintento(tabId, linkId, docMetadata, tipoArchivo) {
 }
 
 /**
- * Obtiene datos de la pagina actual via executeScript
+ * Obtiene datos de la pagina actual via executeScript.
+ * @param {number} tabId - Tab del SRI
+ * @param {'recibidos'|'emitidos'} [origen='recibidos'] - Tabla a extraer
  */
-async function obtenerDatosPagina(tabId) {
+async function obtenerDatosPagina(tabId, origen = 'recibidos') {
   try {
     const resultado = await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: (selectores) => {
-        const tabla = document.querySelector(selectores.TABLA_RECIBIDOS);
-        if (!tabla) return { error: 'No se encontro la tabla' };
+      func: (selectores, origen) => {
+        const tabla = document.querySelector(
+          origen === 'emitidos' ? selectores.TABLA_EMITIDOS : selectores.TABLA_RECIBIDOS
+        );
+        if (!tabla) return { error: `No se encontro la tabla de comprobantes ${origen}` };
+
+        // RUC del usuario logueado
+        const rucUsuario = document.querySelector(selectores.RUC_USUARIO)?.textContent?.match(/\d{13}/)?.[0] || 'desconocido';
 
         const filas = tabla.querySelectorAll('tr');
         const documentos = [];
 
         filas.forEach((fila, index) => {
           const celdas = fila.querySelectorAll('td');
-          if (celdas.length >= 6) {
-            const linkXml = fila.querySelector(selectores.LINK_XML);
-            const linkPdf = fila.querySelector(selectores.LINK_PDF);
+          const linkXml = fila.querySelector(selectores.LINK_XML);
+          const linkPdf = fila.querySelector(selectores.LINK_PDF);
 
+          if (origen === 'recibidos' && celdas.length >= 6) {
             const ruc = celdas[1]?.textContent?.trim().split('\n')[0] || '';
             const razonSocial = celdas[1]?.textContent?.trim().split('\n')[1] || '';
             const celda2Texto = celdas[2]?.textContent?.trim() || '';
@@ -572,6 +595,28 @@ async function obtenerDatosPagina(tabId) {
               linkXmlId: linkXml?.id,
               linkPdfId: linkPdf?.id,
             });
+          } else if (origen === 'emitidos' && celdas.length >= 9) {
+            // Emitidos: Nro | Tipo y serie | Clave acceso | Fecha/hora aut |
+            // Fecha emision | Valor | IVA | Total | RIDE(pdf) | Docs relacionados.
+            // No hay link XML: el XML se obtiene del WS con la clave de acceso.
+            const celda1Texto = celdas[1]?.textContent?.trim() || '';
+            const serieMatch = celda1Texto.match(/(\d{3}-\d{3}-\d+)/);
+            const claveAcceso = celdas[2]?.textContent?.trim() || '';
+
+            documentos.push({
+              index,
+              ruc: rucUsuario, // el emisor es el propio usuario
+              razonSocial: '',
+              tipoDoc: celda1Texto,
+              serie: serieMatch ? serieMatch[1] : '',
+              claveAcceso,
+              fechaEmision: celdas[4]?.textContent?.trim() || '',
+              fechaAutorizacion: celdas[3]?.textContent?.trim() || '',
+              tieneXml: !!claveAcceso, // via web service
+              tienePdf: !!linkPdf,
+              linkXmlId: null,
+              linkPdfId: linkPdf?.id,
+            });
           }
         });
 
@@ -585,12 +630,9 @@ async function obtenerDatosPagina(tabId) {
           }
         }
 
-        // RUC del usuario
-        const rucUsuario = document.querySelector(selectores.RUC_USUARIO)?.textContent?.match(/\d{13}/)?.[0] || 'desconocido';
-
-        return { documentos, paginacion, rucUsuario };
+        return { documentos, paginacion, rucUsuario, origen };
       },
-      args: [SRI_CONFIG.SELECTORES]
+      args: [SRI_CONFIG.SELECTORES, origen]
     });
     return resultado[0]?.result;
   } catch (e) {
@@ -643,10 +685,10 @@ async function navegarSiguiente(tabId) {
 /**
  * Espera inteligente: verifica que el paginador muestre la pagina esperada
  */
-async function esperarCambioPagina(tabId, paginaEsperada) {
+async function esperarCambioPagina(tabId, paginaEsperada, origen = 'recibidos') {
   const inicio = Date.now();
   while (Date.now() - inicio < SRI_CONFIG.TIMEOUT_PAGINA) {
-    const datos = await obtenerDatosPagina(tabId);
+    const datos = await obtenerDatosPagina(tabId, origen);
     if (datos.paginacion?.actual === paginaEsperada) return true;
     await delay(500);
   }
@@ -732,7 +774,7 @@ function construirRutaArchivo(metadata, tipoArchivo, extension) {
   }
 
   // Niveles fijos: tipo movimiento / tipo documento / tipo archivo
-  segmentos.push('recibidos');
+  segmentos.push(metadata.origen === 'emitidos' ? 'emitidos' : 'recibidos');
   segmentos.push(limpiarTipoDoc(metadata.tipoDoc));
   segmentos.push(tipoArchivo === 'xml' ? 'xml' : 'pdf');
 
@@ -806,7 +848,7 @@ function notificarFinalizacion() {
  * link), true/false = resultado real. Asi la deduplicacion no confunde
  * "no intentado" con "descargado" ni "fallido".
  */
-async function procesarDocumento(tabId, doc, tipoDescarga, pagina) {
+async function procesarDocumento(tabId, doc, tipoDescarga, pagina, origen = 'recibidos') {
   estadoDescarga.documentoActual++;
 
   // Verificar si ya fue descargado (O(1) con Set)
@@ -818,6 +860,7 @@ async function procesarDocumento(tabId, doc, tipoDescarga, pagina) {
     return;
   }
 
+  const esEmitidos = origen === 'emitidos';
   const intentaXml = (tipoDescarga === 'xml' || tipoDescarga === 'ambos') && doc.tieneXml;
   const intentaPdf = (tipoDescarga === 'pdf' || tipoDescarga === 'ambos') && doc.tienePdf;
 
@@ -834,12 +877,16 @@ async function procesarDocumento(tabId, doc, tipoDescarga, pagina) {
       tipoDoc: doc.tipoDoc,
       serie: doc.serie,
       fechaEmision: doc.fechaEmision,
-      rucUsuario: estadoDescarga.rucUsuario
+      rucUsuario: estadoDescarga.rucUsuario,
+      origen: origen
     };
 
-    // Descargar XML con reintentos
+    // Descargar XML con reintentos. En emitidos no hay link en la pagina:
+    // se obtiene el XML autorizado del web service con la clave de acceso.
     if (intentaXml) {
-      exitoXml = await ejecutarConReintento(tabId, doc.linkXmlId, docMeta, 'xml');
+      exitoXml = esEmitidos
+        ? await descargarXmlEmitidoConReintento(doc.claveAcceso, docMeta)
+        : await ejecutarConReintento(tabId, doc.linkXmlId, docMeta, 'xml');
       if (!exitoXml) errorMsg = 'Error descargando XML';
       await delay(SRI_CONFIG.DELAY_DESCARGA);
     }
@@ -889,9 +936,77 @@ async function procesarDocumento(tabId, doc, tipoDescarga, pagina) {
 }
 
 /**
+ * Procesa todas las paginas de la tabla actualmente consultada en el SRI.
+ * Asume que estadoDescarga ya esta inicializado. Acumula sobre
+ * estadoDescarga.totalDocumentos para soportar varias consultas en una
+ * misma sesion (modo mes de emitidos).
+ * @returns {Promise<string|null>} Mensaje de error o null si todo fue bien
+ */
+async function procesarPaginasActuales(tabId, tipoDescarga, origen) {
+  let datos = await obtenerDatosPagina(tabId, origen);
+  if (datos.error) return datos.error;
+
+  if (!estadoDescarga.rucUsuario || estadoDescarga.rucUsuario === 'desconocido') {
+    estadoDescarga.rucUsuario = datos.rucUsuario;
+    bufferSesion.rucUsuario = datos.rucUsuario;
+  }
+
+  const totalPaginas = datos.paginacion.total;
+  estadoDescarga.totalPaginas = totalPaginas;
+
+  // Estimar total de documentos (docs en pagina actual * total paginas),
+  // acumulando sobre lo contado en consultas anteriores de esta sesion
+  const docsPorPagina = datos.documentos.length;
+  const base = estadoDescarga.totalDocumentos;
+  estadoDescarga.totalDocumentos = base + docsPorPagina * totalPaginas;
+
+  // Ir a primera pagina si no estamos en ella
+  if (datos.paginacion.actual > 1) {
+    await navegarPrimera(tabId);
+    await esperarCambioPagina(tabId, 1, origen);
+  }
+
+  // Procesar todas las paginas
+  for (let pag = 1; pag <= totalPaginas; pag++) {
+    if (estadoDescarga.detenido) break;
+
+    estadoDescarga.paginaActual = pag;
+
+    // Obtener documentos de pagina actual
+    datos = await obtenerDatosPagina(tabId, origen);
+    if (datos.error) return datos.error;
+
+    // Ajustar el total real al llegar a la ultima pagina (puede estar incompleta)
+    if (pag === totalPaginas) {
+      estadoDescarga.totalDocumentos = base + (pag - 1) * docsPorPagina + datos.documentos.length;
+    }
+
+    // Descargar documentos de esta pagina
+    for (const doc of datos.documentos) {
+      if (estadoDescarga.detenido) break;
+      await procesarDocumento(tabId, doc, tipoDescarga, pag, origen);
+    }
+
+    // Guardar progreso parcial (protege contra terminacion del service worker)
+    await guardarBufferAlStorage(false);
+
+    // Ir a siguiente pagina si hay mas
+    if (pag < totalPaginas && !estadoDescarga.detenido) {
+      await navegarSiguiente(tabId);
+      const cambioOk = await esperarCambioPagina(tabId, pag + 1, origen);
+      if (!cambioOk) {
+        await delay(SRI_CONFIG.DELAY_PAGINA);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Proceso principal de descarga de todas las paginas
  */
-async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = false) {
+async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = false, origen = 'recibidos') {
   // Cargar configuracion del usuario
   await cargarConfigUsuario();
 
@@ -922,6 +1037,7 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
     documentoActual: 0,
     totalDocumentos: 0,
     tipoDescarga: tipoDescarga,
+    origen: origen,
     tabId: tabId,
     sesionId: sesionId,
     rucUsuario: null,
@@ -933,63 +1049,9 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
   actualizarBadge();
   notificarProgreso();
 
-  // Obtener info inicial
-  let datos = await obtenerDatosPagina(tabId);
-  if (datos.error) {
-    estadoDescarga.activo = false;
-    estadoDescarga.error = datos.error;
-    actualizarBadge();
-    notificarProgreso();
-    return;
-  }
-
-  estadoDescarga.totalPaginas = datos.paginacion.total;
-  estadoDescarga.rucUsuario = datos.rucUsuario;
-  bufferSesion.rucUsuario = datos.rucUsuario;
-
-  // Estimar total de documentos (docs en pagina actual * total paginas)
-  const docsPorPagina = datos.documentos.length;
-  estadoDescarga.totalDocumentos = docsPorPagina * datos.paginacion.total;
-
-  // Ir a primera pagina si no estamos en ella
-  if (datos.paginacion.actual > 1) {
-    await navegarPrimera(tabId);
-    await esperarCambioPagina(tabId, 1);
-    datos = await obtenerDatosPagina(tabId);
-  }
-
-  // Procesar todas las paginas
-  for (let pag = 1; pag <= estadoDescarga.totalPaginas; pag++) {
-    if (estadoDescarga.detenido) break;
-
-    estadoDescarga.paginaActual = pag;
-
-    // Obtener documentos de pagina actual
-    datos = await obtenerDatosPagina(tabId);
-    if (datos.error) break;
-
-    // Ajustar el total real al llegar a la ultima pagina (puede estar incompleta)
-    if (pag === estadoDescarga.totalPaginas) {
-      estadoDescarga.totalDocumentos = (pag - 1) * docsPorPagina + datos.documentos.length;
-    }
-
-    // Descargar documentos de esta pagina
-    for (const doc of datos.documentos) {
-      if (estadoDescarga.detenido) break;
-      await procesarDocumento(tabId, doc, tipoDescarga, pag);
-    }
-
-    // Guardar progreso parcial (protege contra terminacion del service worker)
-    await guardarBufferAlStorage(false);
-
-    // Ir a siguiente pagina si hay mas
-    if (pag < estadoDescarga.totalPaginas && !estadoDescarga.detenido) {
-      await navegarSiguiente(tabId);
-      const cambioOk = await esperarCambioPagina(tabId, pag + 1);
-      if (!cambioOk) {
-        await delay(SRI_CONFIG.DELAY_PAGINA);
-      }
-    }
+  const error = await procesarPaginasActuales(tabId, tipoDescarga, origen);
+  if (error) {
+    estadoDescarga.error = error;
   }
 
   // Guardar buffer al storage
@@ -1011,7 +1073,7 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
  * pagina actual. La seleccion es explicita del usuario, asi que no se
  * aplica deduplicacion contra el historial.
  */
-async function descargarSeleccionados(tabId, tipoDescarga, claves) {
+async function descargarSeleccionados(tabId, tipoDescarga, claves, origen = 'recibidos') {
   await cargarConfigUsuario();
   await limpiarHistorialAntiguo();
 
@@ -1030,6 +1092,7 @@ async function descargarSeleccionados(tabId, tipoDescarga, claves) {
     documentoActual: 0,
     totalDocumentos: 0,
     tipoDescarga: tipoDescarga,
+    origen: origen,
     tabId: tabId,
     sesionId: sesionId,
     rucUsuario: null,
@@ -1041,7 +1104,7 @@ async function descargarSeleccionados(tabId, tipoDescarga, claves) {
   actualizarBadge();
   notificarProgreso();
 
-  const datos = await obtenerDatosPagina(tabId);
+  const datos = await obtenerDatosPagina(tabId, origen);
   if (datos.error) {
     estadoDescarga.activo = false;
     estadoDescarga.error = datos.error;
@@ -1061,7 +1124,154 @@ async function descargarSeleccionados(tabId, tipoDescarga, claves) {
 
   for (const doc of docs) {
     if (estadoDescarga.detenido) break;
-    await procesarDocumento(tabId, doc, tipoDescarga, estadoDescarga.paginaActual);
+    await procesarDocumento(tabId, doc, tipoDescarga, estadoDescarga.paginaActual, origen);
+  }
+
+  await guardarBufferAlStorage(true);
+  downloadMetadataMap.clear();
+
+  estadoDescarga.activo = false;
+  estadoDescarga.tiempoEstimado = null;
+
+  actualizarBadge();
+  notificarProgreso();
+  notificarFinalizacion();
+}
+
+/**
+ * Setea la fecha en el formulario de emitidos y pulsa Consultar (MAIN world).
+ * Marca la tabla actual con un atributo para poder detectar cuando el AJAX
+ * de PrimeFaces la reemplaza con los nuevos resultados.
+ * @param {number} tabId - Tab del SRI
+ * @param {string} fechaStr - Fecha en formato dd/mm/aaaa
+ * @returns {Promise<boolean>} true si se pudo disparar la consulta
+ */
+function setearFechaYConsultar(tabId, fechaStr) {
+  return chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    world: 'MAIN',
+    func: (fecha, selectores) => {
+      const inp = document.querySelector(selectores.EMITIDOS_FECHA_INPUT);
+      const btn = document.querySelector(selectores.EMITIDOS_BTN_CONSULTAR);
+      if (!inp || !btn) return false;
+
+      inp.value = fecha;
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+
+      // Marcar la tabla actual: cuando el AJAX la reemplace, el atributo desaparece
+      const tabla = document.querySelector(selectores.TABLA_EMITIDOS);
+      if (tabla) tabla.setAttribute('data-sri-esperando', '1');
+
+      btn.click();
+      return true;
+    },
+    args: [fechaStr, SRI_CONFIG.SELECTORES]
+  }).then(r => r[0]?.result === true).catch(() => false);
+}
+
+/**
+ * Espera a que el AJAX de la consulta de emitidos reemplace la tabla
+ * (detectado por la desaparicion del atributo marcador). Los atributos DOM
+ * son visibles entre worlds, asi que se lee desde el world aislado.
+ * @returns {Promise<boolean>} true si la tabla se actualizo dentro del timeout
+ */
+async function esperarResultadosEmitidos(tabId) {
+  const inicio = Date.now();
+  while (Date.now() - inicio < SRI_CONFIG.TIMEOUT_PAGINA) {
+    try {
+      const r = await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: (selectores) => {
+          const tabla = document.querySelector(selectores.TABLA_EMITIDOS);
+          if (!tabla) return false; // aun no hay tabla nueva
+          return !tabla.hasAttribute('data-sri-esperando');
+        },
+        args: [SRI_CONFIG.SELECTORES]
+      });
+      if (r[0]?.result === true) return true;
+    } catch (e) {
+      // Tab ocupada o navegando; reintentar
+    }
+    await delay(500);
+  }
+  return false;
+}
+
+/**
+ * Descarga los comprobantes emitidos de un mes completo. El formulario del
+ * SRI solo acepta una fecha, asi que se consulta y descarga dia por dia.
+ * La deduplicacion omite lo ya descargado salvo que ignorarHistorial sea true.
+ * @param {number} tabId - Tab del SRI (debe estar en la pantalla de emitidos)
+ * @param {string} tipoDescarga - 'xml' | 'pdf' | 'ambos'
+ * @param {boolean} ignorarHistorial - Re-descargar aunque ya exista
+ * @param {number} anio - Anio del mes a descargar
+ * @param {number} mes - Mes 1-12
+ */
+async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio, mes) {
+  await cargarConfigUsuario();
+  await limpiarHistorialAntiguo();
+
+  const sesionId = generarSesionId();
+  bufferSesion = { documentos: [], rucUsuario: null };
+  indiceDescargados = ignorarHistorial ? new Set() : await construirIndiceDescargados(tipoDescarga);
+
+  const totalDias = new Date(anio, mes, 0).getDate();
+
+  estadoDescarga = {
+    activo: true,
+    detenido: false,
+    exitosos: 0,
+    fallidos: 0,
+    omitidos: 0,
+    paginaActual: 1,
+    totalPaginas: 1,
+    documentoActual: 0,
+    totalDocumentos: 0,
+    diaActual: 0,
+    totalDias: totalDias,
+    tipoDescarga: tipoDescarga,
+    origen: 'emitidos',
+    tabId: tabId,
+    sesionId: sesionId,
+    rucUsuario: null,
+    timestampInicio: Date.now(),
+    tiempoEstimado: null,
+    error: null
+  };
+
+  actualizarBadge();
+  notificarProgreso();
+
+  const hoy = new Date();
+
+  for (let dia = 1; dia <= totalDias; dia++) {
+    if (estadoDescarga.detenido) break;
+    // No consultar dias futuros
+    if (new Date(anio, mes - 1, dia) > hoy) break;
+
+    estadoDescarga.diaActual = dia;
+    estadoDescarga.paginaActual = 1;
+    notificarProgreso();
+
+    const fechaStr = `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}/${anio}`;
+
+    const consultado = await setearFechaYConsultar(tabId, fechaStr);
+    if (!consultado) {
+      estadoDescarga.error = `No se pudo consultar el dia ${fechaStr}. Verifica estar en la pantalla de emitidos.`;
+      break;
+    }
+
+    const listo = await esperarResultadosEmitidos(tabId);
+    if (!listo) {
+      // Fallback: dar tiempo extra y continuar con lo que haya
+      await delay(SRI_CONFIG.DELAY_PAGINA);
+    }
+
+    const error = await procesarPaginasActuales(tabId, tipoDescarga, 'emitidos');
+    if (error) {
+      estadoDescarga.error = error;
+      break;
+    }
   }
 
   await guardarBufferAlStorage(true);
@@ -1083,7 +1293,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ status: 'ocupado' });
       return false;
     }
-    descargarTodasLasPaginas(request.tabId, request.tipoDescarga, request.ignorarHistorial || false);
+    descargarTodasLasPaginas(request.tabId, request.tipoDescarga, request.ignorarHistorial || false, request.origen || 'recibidos');
     sendResponse({ status: 'iniciado' });
     return false;
   }
@@ -1093,7 +1303,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ status: 'ocupado' });
       return false;
     }
-    descargarSeleccionados(request.tabId, request.tipoDescarga, request.claves || []);
+    descargarSeleccionados(request.tabId, request.tipoDescarga, request.claves || [], request.origen || 'recibidos');
+    sendResponse({ status: 'iniciado' });
+    return false;
+  }
+
+  if (request.action === 'iniciarDescargaEmitidosMes') {
+    if (estadoDescarga.activo) {
+      sendResponse({ status: 'ocupado' });
+      return false;
+    }
+    descargarEmitidosMes(request.tabId, request.tipoDescarga, request.ignorarHistorial || false, request.anio, request.mes);
     sendResponse({ status: 'iniciado' });
     return false;
   }

@@ -34,7 +34,7 @@ var SRI_CONFIG = {
     // Emitidos: campos del formulario de consulta (fecha por dia, sin rango)
     EMITIDOS_FECHA_INPUT: '#frmPrincipal\\:calendarFechaDesde_input', // fecha emision (dd/mm/aaaa)
     EMITIDOS_CMB_TIPO: '#frmPrincipal\\:cmbTipoComprobante',    // 1=Fact 2=Liq 3=NC 4=ND 5=Guia 6=Ret
-    EMITIDOS_BTN_CONSULTAR: '#frmPrincipal\\:btnConsultar',     // boton Consultar (verificar id en vivo)
+    EMITIDOS_BTN_CONSULTAR: '#frmPrincipal\\:btnConsultar',     // boton Consultar (verificado en vivo)
   },
 
   // Web service publico de autorizacion del SRI: entrega el XML autorizado a
