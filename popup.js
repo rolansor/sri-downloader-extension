@@ -1330,8 +1330,6 @@ async function restaurarTipoDescarga() {
  * @type {Array<{nombre: string, url?: string, primary?: boolean, items?: Array<{nombre: string, url: string}>}>}
  */
 const SRI_MENU = [
-  { nombre: 'Descargar emitidos', primary: true, esEmitidos: true,
-    url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=60&idGrupo=58' },
   { nombre: 'Descargar recibidos', primary: true, items: [
     { nombre: 'Facturas', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '1' },
     { nombre: 'Liquidaciones de compra', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '2' },
@@ -1339,6 +1337,10 @@ const SRI_MENU = [
     { nombre: 'Notas de Debito', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '4' },
     { nombre: 'Comprobantes de Retencion', url: 'https://srienlinea.sri.gob.ec/tuportal-internet/accederAplicacion.jspa?redireccion=57&idGrupo=55', tipoComprobante: '6' },
   ]},
+  // URL directa de la pantalla de emitidos (validada en vivo); si el SRI
+  // redirige al menu intermedio, navegarAEmitidos hace click en la opcion
+  { nombre: 'Descargar emitidos', primary: true, esEmitidos: true,
+    url: 'https://srienlinea.sri.gob.ec/comprobantes-electronicos-internet/pages/consultas/recuperarComprobantes.jsf' },
   { nombre: 'Claves', items: [
     { nombre: 'Cambiar clave', url: 'https://srienlinea.sri.gob.ec/sri-en-linea/SriClaves/Generacion/internet/actualizar' },
     { nombre: 'Crear y administrar usuarios', url: 'https://srienlinea.sri.gob.ec/sri-en-linea/SriClaves/UsuariosAdicionales/administracion' },
