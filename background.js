@@ -38,6 +38,13 @@ let pendingDownload = { resolver: null, timestamp: null, docMetadata: null, tipo
 // Map de metadata por downloadId para onDeterminingFilename
 let downloadMetadataMap = new Map();
 
+// Metadata pendiente del XML de emitidos descargado via web service (data URL
+// iniciada por la propia extension con chrome.downloads.download). Esa descarga
+// no pasa por onCreated/pendingDownload, asi que se consume directamente en
+// onDeterminingFilename para decidir la ruta. Las descargas son secuenciales:
+// a lo sumo hay una pendiente a la vez.
+let pendingWsXmlMeta = null;
+
 chrome.downloads.onCreated.addListener((downloadItem) => {
   if (!pendingDownload.resolver || !pendingDownload.timestamp) return;
 
@@ -66,10 +73,21 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
 
 // Interceptar descargas para organizar en carpetas
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
-  const meta = downloadMetadataMap.get(downloadItem.id);
+  let meta = downloadMetadataMap.get(downloadItem.id);
+  let esWsXml = false;
 
-  if (!meta || !SRI_CONFIG.ORGANIZACION?.HABILITADO) {
-    // Usar filename original - suggest() sin args puede cancelar la descarga
+  // XML de emitidos descargado por la extension via data URL: el filename
+  // pasado a chrome.downloads.download NO sobrevive a este listener (cualquier
+  // suggest con nombre lo pisa), asi que la ruta definitiva se decide aqui
+  if (!meta && pendingWsXmlMeta && downloadItem.url?.startsWith('data:')) {
+    meta = pendingWsXmlMeta;
+    pendingWsXmlMeta = null;
+    esWsXml = true;
+  }
+
+  if (!meta) {
+    // Descarga ajena: usar filename original - suggest() sin args puede
+    // cancelar la descarga
     suggest({ filename: downloadItem.filename });
     return true;
   }
@@ -85,10 +103,15 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     extension = meta.tipoArchivo === 'xml' ? '.xml' : '.pdf';
   }
 
+  // Devuelve null si la organizacion esta deshabilitada
   const rutaCompleta = construirRutaArchivo(meta.docMetadata, meta.tipoArchivo, extension);
 
   if (rutaCompleta) {
     suggest({ filename: rutaCompleta, conflictAction: 'overwrite' });
+  } else if (esWsXml) {
+    // Sin organizacion: nombre por clave de acceso en la carpeta de descargas
+    // (el nombre generico que Chrome genera para un data URL no sirve)
+    suggest({ filename: construirNombreArchivo('claveAcceso', meta.docMetadata, extension) });
   } else {
     suggest({ filename: downloadItem.filename });
   }
@@ -560,16 +583,20 @@ async function descargarXmlEmitido(claveAcceso, docMetadata) {
 
     const url = xmlADataUrl(resultado.xml);
     const meta = { ...docMetadata, rucUsuario: estadoDescarga.rucUsuario };
-    const ruta = construirRutaArchivo(meta, 'xml', '.xml');
-    const filename = ruta || `${claveAcceso}.xml`;
 
+    // La ruta organizada NO se pasa aqui como filename: nuestro propio
+    // listener de onDeterminingFilename la pisaria (un suggest con nombre
+    // anula el filename de downloads.download). La ruta se decide en el
+    // listener via pendingWsXmlMeta; este filename queda solo de respaldo.
+    pendingWsXmlMeta = { docMetadata: meta, tipoArchivo: 'xml' };
     await chrome.downloads.download({
       url,
-      filename,
-      conflictAction: ruta ? 'overwrite' : 'uniquify'
+      filename: `${claveAcceso}.xml`,
+      conflictAction: 'uniquify'
     });
     return true;
   } catch (e) {
+    pendingWsXmlMeta = null;
     return false;
   }
 }
@@ -1193,6 +1220,7 @@ async function descargarTodasLasPaginas(tabId, tipoDescarga, ignorarHistorial = 
 
   // Limpiar metadata map
   downloadMetadataMap.clear();
+  pendingWsXmlMeta = null;
 
   estadoDescarga.activo = false;
   estadoDescarga.tiempoEstimado = null;
@@ -1268,6 +1296,7 @@ async function descargarSeleccionados(tabId, tipoDescarga, claves, origen = 'rec
 
   await guardarBufferAlStorage(true);
   downloadMetadataMap.clear();
+  pendingWsXmlMeta = null;
 
   estadoDescarga.activo = false;
   estadoDescarga.tiempoEstimado = null;
@@ -1487,6 +1516,7 @@ async function descargarEmitidosMes(tabId, tipoDescarga, ignorarHistorial, anio,
 
   await guardarBufferAlStorage(true);
   downloadMetadataMap.clear();
+  pendingWsXmlMeta = null;
 
   estadoDescarga.activo = false;
   estadoDescarga.tiempoEstimado = null;

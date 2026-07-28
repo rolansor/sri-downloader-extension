@@ -83,7 +83,10 @@ sri-downloader-extension/
 - **XML via web service**: `consultarXmlAutorizado` hace SOAP al WS publico
   `AutorizacionComprobantesOffline` (cel/celcer.sri.gob.ec) con la clave de acceso;
   el XML viene escapado con entidades dentro de `<comprobante>` → `desescaparXml`
-  → `xmlADataUrl` (base64, el SW no tiene URL.createObjectURL) → `chrome.downloads.download`
+  → `xmlADataUrl` (base64, el SW no tiene URL.createObjectURL) → `chrome.downloads.download`.
+  La ruta organizada NO se pasa como `filename` ahi (el propio listener
+  `onDeterminingFilename` la pisaria): se registra en `pendingWsXmlMeta` y el
+  listener decide la ruta final
 - El formulario consulta UN SOLO DIA (sin rango ni "Todos"):
   - Modo dia: descarga lo consultado en pantalla (flujo normal de paginas)
   - Modo mes (`descargarEmitidosMes`): itera del dia 1 hasta UN DIA ANTES de hoy
@@ -300,6 +303,17 @@ document.getElementById(linkId).click();
 
 ### Setear dia="Todos" al navegar a comprobantes
 - **Solucion**: Logica en background.js con `chrome.tabs.onUpdated` + reintentos, no en popup (que se cierra)
+
+### La organizacion en carpetas no aplicaba al XML de emitidos (web service)
+- **Causa**: el `filename` pasado a `chrome.downloads.download` NO sobrevive si
+  la extension tiene un listener `onDeterminingFilename` que llama `suggest` con
+  nombre (lo pisa). La descarga por data URL no pasa por `onCreated`, no habia
+  metadata en `downloadMetadataMap` y el listener caia en la rama de "descarga
+  ajena" sugiriendo el nombre generico del data URL en la raiz de Descargas.
+- **Solucion**: `descargarXmlEmitido` registra la metadata en `pendingWsXmlMeta`
+  antes de llamar `downloads.download`; el listener la consume (detecta URL
+  `data:`) y construye la ruta organizada, o el nombre `claveAcceso.xml` si la
+  organizacion esta deshabilitada.
 
 ## Permisos requeridos (manifest.json)
 - `activeTab` - Acceso a la tab activa
