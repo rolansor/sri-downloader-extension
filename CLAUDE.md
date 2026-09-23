@@ -4,7 +4,7 @@
 Extension de Chrome (Manifest V3) para descargar documentos XML/PDF del SRI Ecuador,
 tanto comprobantes RECIBIDOS como EMITIDOS. Organiza archivos en carpetas
 configurables y ofrece accesos directos al portal SRI.
-Version: 1.5.0 | Dominio: `srienlinea.sri.gob.ec` (+ WS `cel.sri.gob.ec`)
+Version: 1.5.1 | Dominio: `srienlinea.sri.gob.ec` (+ WS `cel.sri.gob.ec`)
 
 ## Estructura de archivos
 ```
