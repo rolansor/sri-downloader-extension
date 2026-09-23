@@ -114,7 +114,7 @@ tanto comprobantes **recibidos** como **emitidos**.
 - **config.js**: Constantes centralizadas (delays, timeouts, selectores, organizacion)
 - **Background (Service Worker)**: Orquesta descargas, reintentos, organizacion de archivos, navegacion SRI
 - **Popup**: Interfaz con 4 tabs, accesos directos SRI, progreso, configuracion
-- **Content Script**: Extrae datos de la tabla del SRI (solo lectura, ~80 lineas)
+- **Content Script**: Extrae datos de la tabla del SRI (solo lectura, ~120 lineas)
 
 ## Permisos
 
@@ -140,6 +140,7 @@ Los valores se pueden ajustar desde la pestana **Configuracion** del popup, o di
 | `DELAY_REINTENTO` | 1000ms | Espera entre reintentos |
 | `TIMEOUT_DESCARGA` | 5000ms | Max espera por descarga |
 | `TIMEOUT_PAGINA` | 10000ms | Max espera cambio pagina |
+| `TIMEOUT_WS` | 15000ms | Max espera al web service de autorizacion (XML emitidos; solo en `config.js`) |
 | `MAX_REINTENTOS` | 2 | Reintentos por descarga fallida |
 | `DIAS_HISTORIAL` | 30 | Dias antes de auto-limpiar |
 
@@ -155,8 +156,9 @@ Los valores se pueden ajustar desde la pestana **Configuracion** del popup, o di
 ## Solucion de problemas
 
 ### "No se encontro la tabla de comprobantes"
-- Asegurate de estar en la pagina de Comprobantes Recibidos
-- Ejecuta una consulta primero para que aparezca la tabla
+- Asegurate de estar en la pagina de Comprobantes Recibidos o Emitidos
+- Ejecuta una consulta primero para que aparezca la tabla (en emitidos no hace
+  falta: el modo "Mes completo" consulta solo)
 - Usa los accesos directos SRI de la extension para navegar rapidamente
 
 ### "Error al comunicarse con la pagina"

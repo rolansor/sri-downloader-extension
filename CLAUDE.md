@@ -12,7 +12,7 @@ sri-downloader-extension/
 ├── manifest.json      # Manifest V3 config (permisos, service worker, content scripts)
 ├── config.js          # Constantes compartidas (delays, selectores, timeouts, organizacion)
 ├── background.js      # Service Worker - descargas, organizacion archivos, navegacion SRI
-├── content.js         # Content Script - extractor de datos DOM (~80 lineas)
+├── content.js         # Content Script - extractor de datos DOM (~120 lineas)
 ├── popup.html         # UI del popup (4 tabs + accesos directos SRI + modal)
 ├── popup.js           # Logica del popup (menu SRI, config, organizacion, historial)
 ├── popup.css          # Estilos (light + dark mode + tema verde agua emitidos)
@@ -60,8 +60,8 @@ sri-downloader-extension/
 - Usa `chrome.downloads.onDeterminingFilename` para interceptar descargas y asignar ruta organizada
 - `downloadMetadataMap`: Map temporal que asocia downloadId con metadata del documento
 - Metadata se propaga por la cadena: `ejecutarConReintento` -> `ejecutarDescargaSRI` -> `ejecutarDescargaMojarra`/`ejecutarDescargaClick`
-- Ruta fija: `carpetaRaiz / [ruc/anio/mes o anio/mes/ruc] / recibidos / tipoDoc / nombre.ext`
-- Ruta incluye subcarpeta `xml/` o `pdf/` para separar tipos de archivo
+- Ruta fija: `carpetaRaiz / [ruc/anio/mes o anio/mes/ruc] / recibidos|emitidos / tipoDoc / xml|pdf / nombre.ext`
+- El segmento `recibidos|emitidos` sale de `metadata.origen`; `xml|pdf` separa tipos de archivo
 - Funciones auxiliares: `sanitizarNombreCarpeta`, `parsearFechaSRI`, `limpiarTipoDoc`, `construirNombreArchivo`, `construirRutaArchivo`
 - `conflictAction: 'overwrite'` para sobrescribir archivos existentes
 - Si deshabilitado, `suggest()` sin parametros = carpeta de descargas por defecto
@@ -105,7 +105,9 @@ sri-downloader-extension/
 
 ### Popup - `popup.html` / `popup.js` / `popup.css`
 - **4 tabs** en grilla 2x2: Descargar | Historial | Configuracion | Organizacion
-- Tabs se ocultan cuando no hay tabla de comprobantes (solo se muestran accesos directos)
+- Tabs se ocultan cuando no hay tabla de comprobantes (solo se muestran accesos directos),
+  salvo en emitidos sin consulta: ahi el area de descarga sigue operativa (modo mes).
+  El flag `contentDisponible` (no `documentos.length`) decide que muestra la pestana "Descargar"
 - Se comunica con background via `chrome.runtime.sendMessage`
 - Al abrir, consulta estado actual con `obtenerEstado`
 - **Accesos directos SRI**: menu con submenus para navegar secciones del portal SRI
@@ -118,14 +120,18 @@ sri-downloader-extension/
 - Exportar historial a CSV
 - Boton reintentar fallidos
 - Recordar ultimo tipo de descarga (XML/PDF/Ambos)
-- Sonido al completar (AudioContext beep)
+- Sonido al completar (AudioContext beep), solo cuando la finalizacion llega en vivo por
+  mensaje del background (`actualizarUIEstado(estado, enVivo=true)`); la consulta inicial
+  `obtenerEstado` al abrir el popup no suena (el background conserva el ultimo estado final)
 - Dark mode automatico (prefers-color-scheme)
 - Construccion DOM segura (textContent, no innerHTML)
 - Alerta al cambiar config de organizacion si hay historial previo
 
 ### Content Script - `content.js`
-- Solo extractor de datos del DOM (~80 lineas)
-- Extrae filas de tabla y paginacion
+- Solo extractor de datos del DOM (~120 lineas)
+- Extrae filas de tabla (recibidos o emitidos) y paginacion; alimenta la lista y el
+  estimado del popup. El background tiene su PROPIO extractor (`obtenerDatosPagina`)
+  con mas campos: si cambia el DOM del SRI hay que actualizar los dos
 - Tiene guard `window.SRI_DOWNLOADER_LOADED` para evitar reinyeccion
 - No ejecuta descargas (eso lo hace background)
 
@@ -137,7 +143,7 @@ sri-downloader-extension/
 | `iniciarDescargaTotal` | Inicia descarga de todas las paginas | `{tabId, tipoDescarga, ignorarHistorial, origen}` |
 | `iniciarDescargaSeleccionados` | Descarga seleccionados de la pagina actual (sin dedup) | `{tabId, tipoDescarga, claves[], origen}` |
 | `iniciarDescargaEmitidosMes` | Descarga emitidos de un mes, consultando dia por dia | `{tabId, tipoDescarga, ignorarHistorial, anio, mes}` |
-| `navegarAEmitidos` | Navega al menu de consultas y hace click en emitidos | `{tabId, url}` |
+| `navegarAEmitidos` | Navega al menu de consultas, hace click en emitidos y auto-consulta | `{tabId, url, tipoComprobante}` |
 | `detenerDescarga` | Detiene descarga en progreso | - |
 | `obtenerEstado` | Obtiene estado actual | - |
 | `obtenerHistorial` | Obtiene historial completo | `{ruc?}` |
@@ -172,7 +178,7 @@ sri-downloader-extension/
 
 ## Organizacion de archivos - Estructura de ruta
 ```
-carpetaRaiz / [orden configurable] / recibidos / tipoDoc / xml|pdf / nombre.ext
+carpetaRaiz / [orden configurable] / recibidos|emitidos / tipoDoc / xml|pdf / nombre.ext
 ```
 
 ### Orden configurable (2 opciones):
@@ -180,7 +186,10 @@ carpetaRaiz / [orden configurable] / recibidos / tipoDoc / xml|pdf / nombre.ext
 - `fecha_ruc`: `anio / mes / ruc`
 
 ### Niveles fijos (no configurables):
-- `recibidos` (tipo de movimiento, siempre recibidos por ahora)
+- `recibidos` o `emitidos` segun la pantalla de origen (`metadata.origen`).
+  El `ruc` del orden es siempre el del usuario logueado; en emitidos, ademas,
+  `metadata.ruc` (emisor) es ese mismo RUC y no hay razon social (`razon_serie`
+  cae al RUC)
 - Tipo de documento: `factura`, `notas_de_credito`, `comprobante_de_retencion`, etc.
 - Tipo de archivo: `xml` o `pdf`
 
@@ -209,6 +218,7 @@ SRI_CONFIG = {
   DELAY_REINTENTO: 1000,     // ms entre reintentos
   TIMEOUT_DESCARGA: 5000,    // ms max por descarga
   TIMEOUT_PAGINA: 10000,     // ms max esperando cambio pagina
+  TIMEOUT_WS: 15000,         // ms max esperando al WS de autorizacion (no expuesto en UI)
   MAX_REINTENTOS: 2,         // reintentos por descarga
   DIAS_HISTORIAL: 30,        // auto-limpieza
   SELECTORES: { ... },       // selectores CSS del SRI
@@ -314,6 +324,25 @@ document.getElementById(linkId).click();
   antes de llamar `downloads.download`; el listener la consume (detecta URL
   `data:`) y construye la ruta organizada, o el nombre `claveAcceso.xml` si la
   organizacion esta deshabilitada.
+
+### El WS de autorizacion colgado bloqueaba la sesion y el boton Detener
+- **Solucion**: `fetch` con `AbortSignal.timeout(TIMEOUT_WS)`; ademas los bucles
+  de reintento (`ejecutarConReintento`, `descargarXmlEmitidoConReintento`)
+  cortan si `estadoDescarga.detenido`
+
+### Estimado de documentos erroneo si se iniciaba desde la ultima pagina
+- **Causa**: "docs por pagina" se media en la pagina actual, que puede estar
+  incompleta si el usuario estaba parado en la ultima
+- **Solucion**: `procesarPaginasActuales` navega primero a la pagina 1 y recien
+  ahi mide `docsPorPagina`
+
+### Pendiente de verificar en vivo: orden de columnas de fecha en recibidos
+- `obtenerDatosPagina` toma `celdas[4]` como fecha de emision y `celdas[5]` como
+  fecha de autorizacion (asi desde v1.0.0). En emitidos el orden verificado es
+  el inverso (autorizacion antes que emision). Si en recibidos tambien fuera
+  asi, la carpeta `anio/mes` se calcularia con la fecha de autorizacion (solo
+  difiere en comprobantes autorizados en un mes distinto al de emision).
+  Comprobar los encabezados de la tabla en vivo antes de tocarlo.
 
 ## Permisos requeridos (manifest.json)
 - `activeTab` - Acceso a la tab activa

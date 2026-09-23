@@ -14,6 +14,7 @@ var SRI_CONFIG = {
   DELAY_REINTENTO: 1000,     // ms entre reintentos de descarga fallida
   TIMEOUT_DESCARGA: 5000,    // ms maximo esperando confirmacion de descarga
   TIMEOUT_PAGINA: 10000,     // ms maximo esperando cambio de pagina
+  TIMEOUT_WS: 15000,         // ms maximo esperando al web service de autorizacion (XML emitidos)
 
   // Reintentos
   MAX_REINTENTOS: 2,         // reintentos por descarga fallida

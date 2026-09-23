@@ -543,10 +543,13 @@ async function consultarXmlAutorizado(claveAcceso, pruebas = false) {
     '<ec:autorizacionComprobante><claveAccesoComprobante>' + claveAcceso +
     '</claveAccesoComprobante></ec:autorizacionComprobante></soapenv:Body></soapenv:Envelope>';
 
+  // Con timeout: sin el, un WS colgado bloquea la sesion entera (y el boton
+  // Detener no responde porque el bucle esta esperando este await)
   const resp = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': '' },
-    body: soap
+    body: soap,
+    signal: AbortSignal.timeout(SRI_CONFIG.TIMEOUT_WS)
   });
   if (!resp.ok) return null;
 
@@ -612,6 +615,8 @@ async function descargarXmlEmitidoConReintento(claveAcceso, docMetadata) {
   for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
     const exito = await descargarXmlEmitido(claveAcceso, docMetadata);
     if (exito) return true;
+    // No seguir reintentando si el usuario pulso Detener
+    if (estadoDescarga.detenido) return false;
     if (intento < SRI_CONFIG.MAX_REINTENTOS) {
       await delay(SRI_CONFIG.DELAY_REINTENTO);
     }
@@ -632,6 +637,8 @@ async function ejecutarConReintento(tabId, linkId, docMetadata, tipoArchivo) {
   for (let intento = 0; intento <= SRI_CONFIG.MAX_REINTENTOS; intento++) {
     const exito = await ejecutarDescargaSRI(tabId, linkId, docMetadata, tipoArchivo);
     if (exito) return true;
+    // No seguir reintentando si el usuario pulso Detener
+    if (estadoDescarga.detenido) return false;
     if (intento < SRI_CONFIG.MAX_REINTENTOS) {
       await delay(SRI_CONFIG.DELAY_REINTENTO);
     }
@@ -866,7 +873,9 @@ function construirNombreArchivo(formato, metadata, extension) {
       return `${ruc}_${serie}${extension}`;
     }
     case 'razon_serie': {
-      const razon = sanitizarNombreCarpeta(metadata.razonSocial || 'sin_razon').replace(/\s+/g, '_');
+      // Emitidos no trae razon social (el emisor es el propio usuario):
+      // usar el RUC antes que un "sin_razon" generico
+      const razon = sanitizarNombreCarpeta(metadata.razonSocial || metadata.ruc || 'sin_razon').replace(/\s+/g, '_');
       const serie = (metadata.serie || 'sin_serie').replace(/[-\s]+/g, '');
       return `${razon}_${serie}${extension}`;
     }
@@ -1109,17 +1118,21 @@ async function procesarPaginasActuales(tabId, tipoDescarga, origen) {
   const totalPaginas = datos.paginacion.total;
   estadoDescarga.totalPaginas = totalPaginas;
 
-  // Estimar total de documentos (docs en pagina actual * total paginas),
+  // Ir a primera pagina si no estamos en ella. Se hace ANTES de estimar el
+  // total: si el usuario estaba parado en la ultima pagina (incompleta), el
+  // conteo de esa pagina no sirve como "docs por pagina"
+  if (datos.paginacion.actual > 1) {
+    await navegarPrimera(tabId);
+    await esperarCambioPagina(tabId, 1, origen);
+    datos = await obtenerDatosPagina(tabId, origen);
+    if (datos.error) return datos.error;
+  }
+
+  // Estimar total de documentos (docs en pagina 1 * total paginas),
   // acumulando sobre lo contado en consultas anteriores de esta sesion
   const docsPorPagina = datos.documentos.length;
   const base = estadoDescarga.totalDocumentos;
   estadoDescarga.totalDocumentos = base + docsPorPagina * totalPaginas;
-
-  // Ir a primera pagina si no estamos en ella
-  if (datos.paginacion.actual > 1) {
-    await navegarPrimera(tabId);
-    await esperarCambioPagina(tabId, 1, origen);
-  }
 
   // Procesar todas las paginas
   for (let pag = 1; pag <= totalPaginas; pag++) {
@@ -1613,9 +1626,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'obtenerConfig') {
-    chrome.storage.local.get(['sriConfig']).then(data => {
-      sendResponse({ config: data.sriConfig || null });
-    });
+    chrome.storage.local.get(['sriConfig'])
+      .then(data => sendResponse({ config: data.sriConfig || null }))
+      .catch(e => sendResponse({ error: e.message }));
     return true;
   }
 
@@ -1696,7 +1709,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (result?.[0]?.result || intentos >= 10) {
               clearInterval(intervalo);
             }
-          }).catch(() => clearInterval(intervalo));
+          }).catch(() => {
+            // executeScript falla mientras la tab navega (el click en el menu
+            // intermedio carga otra pagina): seguir intentando hasta el tope
+            if (intentos >= 10) clearInterval(intervalo);
+          });
         }, 1000);
       }
     };
@@ -1744,7 +1761,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (result?.[0]?.result || intentos >= 10) {
               clearInterval(intervalo);
             }
-          }).catch(() => clearInterval(intervalo));
+          }).catch(() => {
+            // La tab puede estar navegando (redirecciones SSO): seguir
+            // intentando hasta el tope en vez de abortar al primer error
+            if (intentos >= 10) clearInterval(intervalo);
+          });
         }, 1000);
       }
     };

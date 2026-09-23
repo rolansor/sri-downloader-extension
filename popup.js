@@ -14,6 +14,15 @@ let paginacion = { actual: 1, total: 1 };
 /** @type {'recibidos'|'emitidos'} Pantalla del SRI detectada en la tab activa */
 let origenDetectado = 'recibidos';
 
+/**
+ * @type {boolean} true cuando el area de descarga es utilizable en la tab
+ * activa (hay tabla con documentos, o es emitidos aunque no haya consulta:
+ * el modo mes consulta solo). Decide que muestra la pestana "Descargar":
+ * el area de descarga o el menu de accesos directos. No basta con
+ * documentos.length porque en emitidos puede ser 0 y aun asi operar.
+ */
+let contentDisponible = false;
+
 // =====================================================
 // Referencias a elementos del DOM del popup
 // =====================================================
@@ -89,6 +98,7 @@ const configStatus = document.getElementById('configStatus');
  * Se invoca cuando no hay tabla de comprobantes disponible.
  */
 function mostrarSriLinks() {
+  contentDisponible = false;
   contentArea.style.display = 'none';
   historialArea.style.display = 'none';
   configArea.style.display = 'none';
@@ -206,8 +216,13 @@ function formatearTiempo(ms) {
  * @param {number} estado.omitidos - Documentos omitidos (ya descargados)
  * @param {number} estado.tiempoEstimado - Tiempo estimado restante en ms
  * @param {boolean} estado.detenido - Si la descarga fue detenida manualmente
+ * @param {boolean} [enVivo=false] - true si el estado llego por mensaje del
+ *   background (progreso en tiempo real); false si es la consulta inicial al
+ *   abrir el popup. El sonido de fin solo suena en vivo: el background
+ *   conserva el ultimo estado final y sin esta distincion sonaba cada vez
+ *   que se reabria el popup
  */
-function actualizarUIEstado(estado) {
+function actualizarUIEstado(estado, enVivo = false) {
   if (estado.activo) {
     // --- Estado: descarga en progreso ---
     progressContainer.classList.add('active');
@@ -260,7 +275,8 @@ function actualizarUIEstado(estado) {
       }
 
       // Reproducir sonido de notificacion si se descargo al menos un documento
-      if (estado.exitosos > 0) reproducirSonido();
+      // (solo cuando la finalizacion llega en vivo, no al reabrir el popup)
+      if (enVivo && estado.exitosos > 0) reproducirSonido();
 
       // Ocultar barra de progreso despues de 3 segundos
       setTimeout(() => {
@@ -363,8 +379,11 @@ async function cargarDocumentos() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     // Verificar que estamos en el dominio del SRI (tab.url puede ser
-    // undefined en paginas restringidas del navegador)
-    if (!tab?.url || !tab.url.includes('srienlinea.sri.gob.ec')) {
+    // undefined en paginas restringidas del navegador). Se compara el
+    // hostname, no un includes() sobre la URL completa
+    let hostname = '';
+    try { hostname = new URL(tab?.url || '').hostname; } catch (e) { /* URL invalida */ }
+    if (hostname !== 'srienlinea.sri.gob.ec') {
       mostrarEstado('Navega a srienlinea.sri.gob.ec para comenzar', 'info');
       mostrarSriLinks();
       return;
@@ -435,6 +454,7 @@ async function cargarDocumentos() {
       }
 
       // Mostrar area de contenido con la lista de documentos
+      contentDisponible = true;
       statusBox.style.display = 'none';
       contentArea.style.display = 'block';
       document.querySelector('.tabs').style.display = '';
@@ -632,9 +652,8 @@ async function detenerDescarga() {
  */
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === 'estadoDescarga') {
-    actualizarUIEstado(request.estado);
+    actualizarUIEstado(request.estado, true);
   }
-
 });
 
 // =====================================================
@@ -712,7 +731,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
     // Mostrar el area correspondiente al tab seleccionado
     if (tab === 'descarga') {
-      if (documentos.length > 0) {
+      // contentDisponible y no documentos.length: en emitidos sin consulta
+      // el area de descarga opera igual (modo mes) y mostrarSriLinks()
+      // ocultaria las pestanas sin forma de volver
+      if (contentDisponible) {
         contentArea.style.display = 'block';
       } else {
         mostrarSriLinks();
@@ -1047,7 +1069,7 @@ const CONFIG_DEFAULTS = {
     HABILITADO: false,
     /** Nombre de la carpeta raiz donde se guardan las descargas */
     CARPETA_RAIZ: 'descargas_sri',
-    /** Estructura de subcarpetas usando tokens reemplazables */
+    /** Orden de las carpetas de RUC y fecha: 'ruc_fecha' (ruc/anio/mes) o 'fecha_ruc' (anio/mes/ruc) */
     ORDEN: 'ruc_fecha',
     /** Formato del nombre de archivo: 'claveAcceso', 'ruc_serie', o 'razon_serie' */
     FORMATO_NOMBRE: 'claveAcceso'
@@ -1073,7 +1095,8 @@ function obtenerOrganizacionUI() {
 
 /**
  * Actualiza la vista previa de la ruta con datos de ejemplo.
- * Estructura fija: carpetaRaiz / [ruc+fecha o fecha+ruc] / recibidos / tipoDoc / nombre.ext
+ * Estructura fija: carpetaRaiz / [ruc+fecha o fecha+ruc] / recibidos|emitidos / tipoDoc / xml|pdf / nombre.ext
+ * El segmento recibidos|emitidos refleja la pantalla detectada en la tab activa.
  */
 function actualizarPreview() {
   const previewEl = document.getElementById('cfgPreviewRuta');
@@ -1093,7 +1116,7 @@ function actualizarPreview() {
     segmentos.push(ruc, '2026', '03');
   }
 
-  segmentos.push('recibidos', 'factura', 'xml');
+  segmentos.push(origenDetectado === 'emitidos' ? 'emitidos' : 'recibidos', 'factura', 'xml');
 
   switch (org.FORMATO_NOMBRE) {
     case 'ruc_serie':

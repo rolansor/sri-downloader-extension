@@ -11,12 +11,13 @@ if (window.SRI_DOWNLOADER_LOADED) {
   window.SRI_DOWNLOADER_LOADED = true;
 
 /**
- * Obtiene las filas de la tabla de comprobantes recibidos y extrae
- * los datos relevantes de cada documento.
- * @returns {Object} Objeto con array de documentos y total, o error si no hay tabla
- * @returns {Array<Object>} [].documentos - Lista de documentos encontrados
- * @returns {number} [].total - Cantidad total de documentos
- * @returns {string} [].error - Mensaje de error si no se encontro la tabla
+ * Obtiene las filas de la tabla de comprobantes (recibidos o emitidos, segun
+ * cual exista en la pagina) y extrae los datos relevantes de cada documento.
+ * Estos datos solo alimentan la lista y el estimado del popup; el background
+ * tiene su propio extractor (obtenerDatosPagina) con mas campos para la
+ * descarga. Si cambia el DOM del SRI hay que actualizar ambos.
+ * @returns {{documentos: Array<Object>, total: number, origen: 'recibidos'|'emitidos', sinConsulta?: boolean}|{error: string}}
+ *   sinConsulta=true indica pantalla de emitidos con formulario pero sin tabla
  */
 function obtenerFilasTabla() {
   // Detectar en que pantalla estamos: recibidos o emitidos
