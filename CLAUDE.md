@@ -336,13 +336,15 @@ document.getElementById(linkId).click();
 - **Solucion**: `procesarPaginasActuales` navega primero a la pagina 1 y recien
   ahi mide `docsPorPagina`
 
-### Pendiente de verificar en vivo: orden de columnas de fecha en recibidos
-- `obtenerDatosPagina` toma `celdas[4]` como fecha de emision y `celdas[5]` como
-  fecha de autorizacion (asi desde v1.0.0). En emitidos el orden verificado es
-  el inverso (autorizacion antes que emision). Si en recibidos tambien fuera
-  asi, la carpeta `anio/mes` se calcularia con la fecha de autorizacion (solo
-  difiere en comprobantes autorizados en un mes distinto al de emision).
-  Comprobar los encabezados de la tabla en vivo antes de tocarlo.
+### La carpeta anio/mes de recibidos usaba la fecha de autorizacion
+- **Causa**: `obtenerDatosPagina` tomaba `celdas[4]` como fecha de emision y
+  `celdas[5]` como autorizacion (asi desde v1.0.0). Verificado en vivo
+  (2026-09): el orden real es "Fecha y hora de autorizacion" (col 4) y
+  "Fecha emision" (col 5), igual que en emitidos.
+- **Solucion**: indices corregidos. Efecto: la carpeta `anio/mes` y las
+  columnas de fecha del historial/CSV ahora son correctas; los registros
+  previos del historial tienen ambas fechas intercambiadas (solo difiere en
+  comprobantes autorizados en un mes distinto al de emision).
 
 ## Permisos requeridos (manifest.json)
 - `activeTab` - Acceso a la tab activa

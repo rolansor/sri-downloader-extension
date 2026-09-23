@@ -684,9 +684,12 @@ async function obtenerDatosPagina(tabId, origen = 'recibidos') {
             // Extraer serie del texto (ej: "Factura  001-006-055715817" -> "001-006-055715817")
             const serieMatch = celda2Texto.match(/(\d{3}-\d{3}-\d+)/);
             const serie = serieMatch ? serieMatch[1] : '';
+            // Columnas verificadas en vivo (2026-09): Nro | RUC y razon social |
+            // Tipo y serie | Clave de acceso | Fecha y hora de autorizacion |
+            // Fecha emision | Valor | IVA | Total | Documento(xml) | RIDE | Relacionados
             const claveAcceso = celdas[3]?.textContent?.trim() || '';
-            const fechaEmision = celdas[4]?.textContent?.trim() || '';
-            const fechaAutorizacion = celdas[5]?.textContent?.trim() || '';
+            const fechaAutorizacion = celdas[4]?.textContent?.trim() || '';
+            const fechaEmision = celdas[5]?.textContent?.trim() || '';
 
             documentos.push({
               index, ruc, razonSocial, tipoDoc, serie, claveAcceso,
